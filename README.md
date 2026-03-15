@@ -2,7 +2,7 @@
 
 A robust ASP.NET Core Web API for an e-commerce platform, built with **.NET 10** and **Entity Framework Core**. This project demonstrates enterprise-level patterns, Clean Architecture principles, and advanced EF Core features to guarantee data integrity and high performance.
 
-## 🏗 Architecture
+## Architecture
 
 The project is divided into distinct layers to separate concerns:
 
@@ -10,7 +10,7 @@ The project is divided into distinct layers to separate concerns:
 *   **Store.Infrastructure:** Contains the database context (`ApplicationDbContext`), EF Core migrations, entity configurations, interceptors, and data seeding logic.
 *   **Store.API:** The presentation layer representing the HTTP endpoints (Controllers), dependency injection configuration, Swagger setup, and application bootstrapping.
 
-## ✨ Key Features
+## Key Features
 
 *   **Domain-Driven Design (DDD) Patterns:** Entities encapsulate their own behavior. For instance, `Order` manages its `OrderItems` internally (Aggregate Root pattern) and handles total calculation and status transitions itself (`ConfirmOrder()`, `CancelOrder()`).
 *   **Automated Auditing:** Uses a custom EF Core `SaveChangesInterceptor` (`AuditInterceptor`) to automatically stamp entities with `CreatedAt` and `UpdatedAt` timestamps during database saves.
@@ -20,7 +20,7 @@ The project is divided into distinct layers to separate concerns:
 *   **Automated Data Seeding:** A built-in `Seeder` class populates the database with initial categories, tags, products, customers, and orders on application startup if the database is empty.
 *   **Circular Reference Handling:** API responses are configured to handle model object cycles safely (e.g., `ReferenceHandler.IgnoreCycles`).
 
-## 📦 Domain Models
+## Domain Models
 
 *   **`Product`**: Represents items available for purchase. Belongs to a `Category` and can have many `Tags`.
 *   **`Category`**: Groups related products (e.g., Electronics, Clothing).
@@ -30,7 +30,7 @@ The project is divided into distinct layers to separate concerns:
 *   **`OrderItem`**: Represents line items tied to an `Order` and a `Product`.
 *   **`Payment`**: Tracks financial transactions tied to an `Order`.
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 *   [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
@@ -57,11 +57,3 @@ The project is divided into distinct layers to separate concerns:
 - Example endpoints:
     - `GET /api/products`: Retrieves a list of products.
     - `POST /api/orders`: Creates a new order.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please read our [Contributing Guidelines](./CONTRIBUTING.md) for details on submitting issues, proposing features, and code guidelines.
-
-## 📜 License
-
-This project is licensed under the [MIT License](./LICENSE.txt).
