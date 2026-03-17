@@ -10,6 +10,7 @@ public class Order: BaseEntity
 
     public decimal TotalAmount { get; set; }
     public string? Notes { get; set; }
+    public bool IsPaid { get; set; }
 
     public Guid CustomerId { get; set; }
 
