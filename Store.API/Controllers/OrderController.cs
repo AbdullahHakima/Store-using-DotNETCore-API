@@ -1,5 +1,7 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Store.API.DTOs;
 using Store.Domain.Entities;
 using Store.Domain.Enums;
 using Store.Infrastructure.Presistence;
@@ -23,51 +25,48 @@ public class OrderController : ControllerBase
         
 
     //}
-    [HttpPost("/api/orders/{id}/Payments")]
-    public async Task<IActionResult> Payments([FromQuery] Guid orderId,
-                                        [FromBody]decimal amount,
-                                        [FromBody]string method,
-                                        string? referenceCode)
+    [HttpPost("{id}/Payments")]
+    public async Task<IActionResult> Payments([FromRoute] Guid Id,
+                                              [FromBody] AddNewPaymentDTO paymentDTO)
     {
-        var order = _db.Orders.SingleOrDefault(q => q.Id == orderId);
+        var order = await _db.Orders.Include(o=>o.Payments).FirstOrDefaultAsync(o => o.Id == Id);
         if (order is null)
-            return NotFound($"The order with id:{orderId} is not exist!");
+            return NotFound($"The order with id:{Id} is not exist!");
         if (order.Status != OrderStatus.Confirmed)
             return BadRequest("Can not make a payment for not confirmed orders");
-        if (amount <= 0) return BadRequest("Can not make a payment with amount nagative or zero");
-        if (amount > order.TotalAmount) return BadRequest($"The payment can be exceeds the order amount:{order.TotalAmount}");
+        if (paymentDTO.Amount <= 0) return BadRequest("Can not make a payment with amount nagative or zero");
 
-     using var transaction = _db.Database.BeginTransaction();
-        try
-        {
-            order.TotalAmount -= amount;
-            if (order.TotalAmount == 0) order.IsPaid = true;
-            Payment newPayment = new Payment()
-            {
-                OrderId = orderId,
-                Amount = amount,
-                Order = order,
-                Method = Enum.Parse<PaymentMethod>(method),
-                PaidAt = DateTime.UtcNow,
-            };
+        if(!Enum.TryParse<PaymentMethod>(paymentDTO.method,ignoreCase:true,out PaymentMethod method))
+            return BadRequest($"The payment method {paymentDTO.method} is not supported!");
 
-            _db.Payments.Add(newPayment);
-            _db.SaveChanges();
-            transaction.Commit();
-            return Ok(new
+        decimal alreadyPaid = order.Payments.Sum(p => p.Amount);
+        decimal amountRemaining = order.TotalAmount - alreadyPaid;
+        decimal TotalAfterPayment= alreadyPaid+paymentDTO.Amount;
+        if (paymentDTO.Amount > amountRemaining) 
+            return BadRequest(new
             {
-                PaymentId = newPayment.Id,
-                OrderId=orderId,
-                AmountPaid=newPayment.Amount,
-                RemaniningBalance= order.TotalAmount,
-                order.IsPaid
+                eror=$"The payment can be exceeds the order amount:{amountRemaining}",
+                AmoutRemaning = amountRemaining
             });
-        }
-        catch (Exception ex)
+
+        order.IsPaid = TotalAfterPayment >= order.TotalAmount;
+        var payment = new Payment
         {
-            transaction.Rollback();
-            return BadRequest(ex.Message );
-        }
-        
+            Amount = paymentDTO.Amount,
+            Method = method,
+            RefrenceCode = paymentDTO.ReferenceCode,
+            OrderId = order.Id,
+            PaidAt=DateTime.UtcNow,
+        };
+        await _db.Payments.AddAsync(payment);
+        await _db.SaveChangesAsync();
+        return Ok(new
+        {
+            PaymentId = payment.Id,
+            OrderId = order.Id,
+            AmountPaid = paymentDTO.Amount,
+            AmountRemaining = amountRemaining,
+            order.IsPaid
+        });
     }
 }
