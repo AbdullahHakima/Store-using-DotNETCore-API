@@ -436,14 +436,173 @@ public async Task<IActionResult> CustomerSalesReport(
 | Data integrity | Never mutate source values — derive calculated values from source |
 
 ---
+ 
+### Self-Directed — Orders Summary
+ 
+**Level:** Self-directed (no requirements given)
+**Endpoint:** `GET /api/orders/summary`
+ 
+**What was built:**
+Grouped orders by status and returned per-group counts, revenue, and unpaid counts — going further than the prompt asked by adding status breakdown instead of a flat total.
+ 
+**Key concepts practiced:**
+- `GroupBy` inside EF query translated to SQL `GROUP BY`
+- `g.Count()` per group — not a pre-computed whole-table count
+- Deriving overall totals from the grouped result in C# — no second DB call
+- `g.Where(o => o.IsPaid).Sum()` for actual revenue only
+ 
+**Final submitted solution:**
+```csharp
+[HttpGet("summary")]
+public async Task<IActionResult> OrdersSummary()
+{
+    var summary = await _db.Orders
+        .GroupBy(g => g.Status)
+        .Select(g => new
+        {
+            Status           = g.Key.ToString(),
+            TotalOrders      = g.Count(),
+            TotalRevenue     = g.Where(o => o.IsPaid).Sum(o => o.TotalAmount),
+            TotalCountUnPaid = g.Count(o => !o.IsPaid),
+        })
+        .AsNoTracking()
+        .ToListAsync();
+ 
+    return Ok(summary);
+}
+```
+ 
+**Score:** 7.0 first attempt (self-directed, no requirements provided)
+ 
+---
+ 
+### Task 05 — Bulk Category Transfer
+ 
+**Level:** Hardest
+**Endpoint:** `POST /api/categories/{targetCategoryId}/transfer-products`
+ 
+**Requirements:**
+1. Request body: list of `productId` (Guid) to transfer into the target category
+2. Reject entire request if target category does not exist — `404`
+3. Reject entire request if product list is empty — `400`
+4. Load all referenced products in one query
+5. Per product: if not found → fail. If already in target category → fail. Otherwise transfer.
+6. Save only if at least one transfer succeeded
+7. Return: `targetCategory`, `succeeded` (productId, productName, previousCategory), `failed` (productId, reason)
+ 
+**Key concepts practiced:**
+- Whole-request validation before expensive DB work — category check first, product load second
+- `Except()` to find missing Ids after batch load — no impossible loop condition
+- `Include(p => p.Category)` to capture the old category name before mutation
+- Same-category guard clause — prevents pointless self-transfer
+- Names in responses, not Guids — display-facing fields are always human-readable
+- `oldProductCategory` captured before `CategoryId` is changed — same pattern as `oldStock` in Task 03
+ 
+**Final submitted solution:**
+```csharp
+[HttpPost("{targetCategoryId}/transfer-products")]
+public async Task<IActionResult> TransferProducts(
+    [FromRoute] Guid targetCategoryId,
+    [FromBody]  List<Guid> productIds)
+{
+    var success = new List<ProductsSuccessTransferedDto>();
+    var failed  = new List<FailedTransferedProductsToCategoryDto>();
+ 
+    if (productIds == null || productIds.Count == 0)
+        return BadRequest("No product Ids provided.");
+ 
+    if (targetCategoryId == Guid.Empty)
+        return BadRequest("Target category Id is not valid.");
+ 
+    var targetCategory = await _db.Categories.FindAsync(targetCategoryId);
+    if (targetCategory is null)
+        return NotFound("Target category not found.");
+ 
+    var products = await _db.Products
+        .Where(p => productIds.Contains(p.Id))
+        .Include(p => p.Category)
+        .ToListAsync();
+ 
+    var missingProductIds = productIds.Except(products.Select(p => p.Id)).ToList();
+ 
+    foreach (var missingProductId in missingProductIds)
+    {
+        failed.Add(new FailedTransferedProductsToCategoryDto
+        {
+            ProductId = missingProductId,
+            Reason    = "Product not found."
+        });
+    }
+ 
+    foreach (var product in products)
+    {
+        if (product.CategoryId == targetCategoryId)
+        {
+            failed.Add(new FailedTransferedProductsToCategoryDto
+            {
+                ProductId = product.Id,
+                Reason    = "Product is already in this category."
+            });
+            continue;
+        }
+ 
+        var oldProductCategory = product.Category.Name;
+        product.CategoryId = targetCategoryId;
+ 
+        success.Add(new ProductsSuccessTransferedDto
+        {
+            ProductId        = product.Id,
+            ProductName      = product.Name,
+            OldCategory      = oldProductCategory,
+            NewCategory      = targetCategory.Name
+        });
+    }
+ 
+    if (success.Count > 0)
+        await _db.SaveChangesAsync();
+ 
+    return Ok(new
+    {
+        TargetCategoryName = targetCategory.Name,
+        Success            = success,
+        Failed             = failed
+    });
+}
+```
+ 
+**Score progression:** 7.0 → 8.3 → 9.3
+ 
+---
+ 
+## Patterns Learned
+ 
+| Pattern | Description |
+|---|---|
+| Deferred execution | Build `IQueryable` fully, call `ToListAsync()` once at the end |
+| Guard clauses | Check every failure first with `continue` — success path at the bottom |
+| Batch loading | One `Contains()` query for all Ids — never query inside a loop |
+| Navigation aggregates | `Count()`, `Sum()`, `Average()`, `Max()` inside `Select()` — translated to SQL |
+| Consistent filtering | Date filters applied to every aggregate, not just one field |
+| Change tracker | Modify loaded entities directly — no `Update()` call needed |
+| Conditional save | `SaveChangesAsync()` only when there is something to write |
+| Data integrity | Never mutate source values — derive calculated values from source |
+| Except() for missing Ids | Find unmatched Ids after batch load — no impossible loop condition |
+| Pre-mutation capture | Save old values before changing entity state — oldStock, oldCategory |
+| Whole-request vs per-item validation | Check whole-request preconditions first, then validate per item in the loop |
+| Names not Guids in responses | Display-facing fields are always human-readable strings |
+| GroupBy aggregates | `g.Count()`, `g.Sum()` per group — not a pre-computed whole-table value |
+ 
+---
 
 ## Starting Score Trend
-
+ 
 | Task | First Attempt | Final |
 |---|---|---|
 | Task 01 — Search | 3.7 | 8.7 |
 | Task 02 — Payment | 4.7 | 8.3 |
 | Task 03 — Stock | 6.3 | 9.3 |
 | Task 04 — Report | 7.0 | 9.0 |
-
-First attempt scores: **3.7 → 4.7 → 6.3 → 7.0** — consistent improvement each task.
+| Self-directed — Summary | 7.0 | 7.0 |
+| Task 05 — Transfer | 7.0 | 9.3 |
+ 
+First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0**
