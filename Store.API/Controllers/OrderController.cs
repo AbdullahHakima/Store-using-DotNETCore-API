@@ -69,4 +69,17 @@ public class OrderController : ControllerBase
             order.IsPaid
         });
     }
+
+    [HttpGet("summary")]
+    public async Task<IActionResult> OrdersSummary()
+    {
+        var summary= await _db.Orders.GroupBy( g=> g.Status).Select(g=> new {
+            Status = g.Key.ToString(),
+            totalOrders=g.Count(),
+            TotalRevenue = g.Where(o=>o.IsPaid).Sum(o=>o.TotalAmount),
+            totalCountUnPaid=g.Count(o=>!o.IsPaid),
+        }).AsNoTracking().ToListAsync();
+        return Ok(summary);
+
+    }
 }
