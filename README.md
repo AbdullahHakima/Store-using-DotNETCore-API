@@ -869,9 +869,7 @@ public async Task<IActionResult> GetByCategory([FromQuery] Guid categoryId)
 | Task 05 — Transfer | 7.0 | 9.3 |
 | Task 06 — Split Query | 9/10 code | 9/10 |
 | Task 07 — Projection | 10/10 | 10/10 |
- 
-First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0**
- 
 | Task 08 — Compiled Queries | 9.3/10 | 9.3/10 |
+ 
  
 First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0 → 9.3**
