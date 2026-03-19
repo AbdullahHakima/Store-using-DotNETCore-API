@@ -128,4 +128,62 @@ public class ProductsController : ControllerBase
         });
     }
 
+
+    [HttpGet("search")]
+    public async Task<IActionResult> searchWithFilters([FromQuery] string? name,
+                                                       [FromQuery] Guid? categoryId,
+                                                       [FromQuery] decimal? minPrice,
+                                                       [FromQuery] decimal? maxPrice,
+                                                       [FromQuery] bool? InStock,
+                                                       [FromQuery] int pageSize=10,
+                                                       [FromQuery] int page=1)
+    {
+        pageSize = Math.Clamp(pageSize, 1, 50);// clamp used to restrict the number of products in single page between min value (1) to the max value(50) 
+                                               // if the user enter more that the max value 50 the clamp automatically set it to 50 and
+                                               // if the user enter less than the min value 1 the clamp automatically set it to 1
+        var query = _db.Products.Where(p=>p.IsActive)
+                                .AsQueryable();
+
+
+        if (!string.IsNullOrEmpty(name))
+            query =  query.Where(q => q.Name.Contains(name));// i used contains instead of using equality operator beacasue the quality operator need the user to enter the ful name of the product which is not realistic 
+                                                             // in searching about products and the contains() is translated to the Sql as LIKE %name% which is more flexible for searching about products by their names
+        if (categoryId.HasValue)
+            query = query.Where(q => q.CategoryId == categoryId);
+        if(minPrice.HasValue)
+            query= query.Where(q=>q.Price>= minPrice);
+        if(maxPrice.HasValue)
+            query= query.Where(q=>q.Price<= maxPrice);
+        if(InStock.HasValue)
+            query= query.Where(q=>q.StockQuantity > 0 == InStock.Value);// if the user want to search about products that are in stock the query will filter the products that have stock quantity more than 0
+                                                                        // and if the user want to search about products that are not in stock the query will filter the products that have stock quantity equal to 0
+        var totalItems = await query.CountAsync();
+
+        var items = await query.OrderBy(p => p.Name)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(p => new
+            {
+                p.Id,
+                p.Name,
+                p.Price,
+                Stock = p.StockQuantity,
+                CategoryName = p.Category.Name,
+                Tags = p.Tags.Select(t => t.Name).ToList()
+            }).AsNoTracking().ToListAsync(); // order by name to have a consistent order of products across pages
+       
+
+        var totalPages = (int)Math.Ceiling(totalItems / (double)pageSize);
+
+        return Ok(new
+        {
+            page,
+            totalItems,
+            totalPages,
+            items,
+        });
+    }
+
 }
+
+

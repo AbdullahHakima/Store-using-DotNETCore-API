@@ -32,6 +32,11 @@ namespace Store.API
                 // Add the AuditInterceptor to the DbContext options, which will allow it to intercept database operations for auditing purposes.
                 option.AddInterceptors(
                     ServiceProvider.GetRequiredService<AuditInterceptor>());
+                // Configure logging for the DbContext to log SQL queries and other information to
+                // the console with a log level of Information. This can be useful for debugging and monitoring database interactions.
+                option.LogTo(Console.WriteLine,LogLevel.Information)
+                .EnableSensitiveDataLogging()
+                .EnableDetailedErrors();
             });
 
             var app = builder.Build();
