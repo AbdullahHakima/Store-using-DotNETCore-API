@@ -744,6 +744,91 @@ public async Task<IActionResult> GetOrderDetailsV3([FromRoute] Guid id)
 **SQL observation:** 14 columns vs ~40 in Version A. Same JOIN structure, 65% fewer bytes. EF computed `TotalPrice` as `CAST(Quantity AS decimal) * UnitPrice` directly in SQL — no C# math after the fact.
  
 **Score:** 10/10 across all three dimensions
+ ---
+ 
+### Task 08 — Compiled Queries
+ 
+**Level:** Performance
+**Endpoints:** `GET /api/products/{id}`, `GET /api/products/by-category/{categoryId}`
+ 
+**Requirements:**
+1. Create a static `CompiledQueries` class in `Store.Infrastructure/Persistence/`
+2. Write a compiled query returning a single product by Id
+3. Write a compiled query returning all active products for a given categoryId
+4. Use both in controller endpoints
+5. Capture SQL and compare to normal query
+6. Explain the difference between compiled query and EF's built-in query cache
+ 
+**Key concepts practiced:**
+- `EF.CompileAsyncQuery()` — pays LINQ-to-SQL translation cost once at startup
+- `static readonly` field — one delegate instance shared across all requests, never recreated
+- Named DTO required — anonymous types cannot be used as return types in compiled queries
+- Sync terminators inside compiled queries — `FirstOrDefault()` not `FirstOrDefaultAsync()`
+- Single entity → `Task<T?>`, collection → `IAsyncEnumerable<T>` streamed with `await foreach`
+- SQL is identical to normal query — the difference is when translation happens, not what SQL is produced
+- `!products.Any()` not `products is null` — a `new List<T>()` is never null
+ 
+**The key distinction:**
+- EF built-in cache: still runs expression tree parsing + hash lookup on every call even on a hit
+- Compiled query: stores result as a .NET delegate — no parsing, no hashing, direct invocation
+- Benefit is measurable only on hot-path endpoints called thousands of times per minute
+ 
+**Final submitted solution:**
+```csharp
+public static class CompiledQueries
+{
+    public static readonly Func<StoreDbContext, Guid, Task<ProductDto?>>
+        GetProductById = EF.CompileAsyncQuery(
+            (StoreDbContext db, Guid id) =>
+                db.Products
+                  .Where(p => p.Id == id && p.IsActive)
+                  .Select(p => new ProductDto
+                  {
+                      Id              = p.Id,
+                      Name            = p.Name,
+                      CategoryName    = p.Category.Name,
+                      Price           = p.Price,
+                      QuantityInStock = p.StockQuantity
+                  })
+                  .FirstOrDefault());
+ 
+    public static readonly Func<StoreDbContext, Guid, IAsyncEnumerable<ProductDto>>
+        GetProductsByCategoryId = EF.CompileAsyncQuery(
+            (StoreDbContext db, Guid categoryId) =>
+                db.Products
+                  .Where(p => p.CategoryId == categoryId && p.IsActive)
+                  .Select(p => new ProductDto
+                  {
+                      Id              = p.Id,
+                      Name            = p.Name,
+                      CategoryName    = p.Category.Name,
+                      Price           = p.Price,
+                      QuantityInStock = p.StockQuantity
+                  }));
+}
+ 
+// Controller usage
+[HttpGet("{id}/compiled")]
+public async Task<IActionResult> GetById([FromRoute] Guid id)
+{
+    var product = await CompiledQueries.GetProductById(_db, id);
+    if (product is null) return NotFound();
+    return Ok(product);
+}
+ 
+[HttpGet("by-category")]
+public async Task<IActionResult> GetByCategory([FromQuery] Guid categoryId)
+{
+    var products = new List<ProductDto>();
+    await foreach (var p in CompiledQueries.GetProductsByCategoryId(_db, categoryId))
+        products.Add(p);
+ 
+    if (!products.Any()) return NotFound($"No products found for category {categoryId}.");
+    return Ok(products);
+}
+```
+ 
+**Score:** 9.3/10 first attempt
  
 ---
  
@@ -764,7 +849,9 @@ public async Task<IActionResult> GetOrderDetailsV3([FromRoute] Guid id)
 | Whole-request vs per-item validation | Check whole-request preconditions first, then validate per item in the loop |
 | Names not Guids in responses | Display-facing fields are always human-readable strings |
 | GroupBy aggregates | `g.Count()`, `g.Sum()` per group — not a pre-computed whole-table value |
-| AsSplitQuery() | Use when loading 2+ large collections — eliminates cartesian row multiplication |
+| Compiled queries | `EF.CompileAsyncQuery` — translate once at startup, skip cache lookup on every call |
+| IAsyncEnumerable streaming | `await foreach` — stream collection results without buffering all rows |
+| List is never null | Use `!list.Any()` not `list is null` — a constructed List cannot be null |
 | Select() over Include() for reads | Select() fetches only named columns — Include() loads full entities including unused columns |
 | SQL logging | `LogTo` + `EnableSensitiveDataLogging` — always verify what EF actually sends |
  
@@ -784,3 +871,7 @@ public async Task<IActionResult> GetOrderDetailsV3([FromRoute] Guid id)
 | Task 07 — Projection | 10/10 | 10/10 |
  
 First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0**
+ 
+| Task 08 — Compiled Queries | 9.3/10 | 9.3/10 |
+ 
+First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0 → 9.3**
