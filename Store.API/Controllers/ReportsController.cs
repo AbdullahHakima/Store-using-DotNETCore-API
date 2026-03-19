@@ -14,44 +14,83 @@ namespace Store.API.Controllers
         _context = context;
         }
 
+        //[HttpGet("customers")]
+        //public async Task<IActionResult> CustomerSalesReport([FromQuery] DateTime? from,
+        //                                                     [FromQuery] DateTime? to,
+        //                                                     [FromQuery] int pageSize = 10,
+        //                                                     [FromQuery] int pageNumber = 1)
+        //{
+
+
+        //    pageSize = Math.Clamp(pageSize, 1, 50);
+
+        //    var query = _context.Customers.Where(c => c.Orders.Any())
+        //                                 .OrderByDescending(c => c.Orders.Sum(o => o.TotalAmount));
+
+        //    var totalCount = await query.CountAsync();
+
+        //    var items = await query.Skip((pageNumber - 1) * pageSize)
+        //                     .Take(pageSize)
+        //                     .Select(q => new
+        //                     {
+        //                         customerId = q.Id,
+        //                         customerName = q.Name,
+        //                         customerEmail = q.Email,
+        //                         totalOrders = q.Orders.Count(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)),
+        //                         totalSpend = q.Orders.Where(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)).Sum(o => o.TotalAmount),
+        //                         averageOrderValue = Math.Round(q.Orders.Where(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)).Average(o => o.TotalAmount), 2),
+        //                         lastOrderDate = q.Orders.Where(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)).Max(o => o.CreatedAt),
+        //                         fullyPaidOrders = q.Orders.Count(o => o.IsPaid && (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)),
+        //                     }).AsNoTracking().ToListAsync();
+
+        //    return Ok(new
+        //    {
+        //        totalCount,
+        //        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+        //        currentPage = pageNumber,
+        //        items,
+        //    });
+
+        //}
+
+
         [HttpGet("customers")]
         public async Task<IActionResult> CustomerSalesReport([FromQuery] DateTime? from,
                                                              [FromQuery] DateTime? to,
-                                                             [FromQuery]int pageSize=10,
-                                                             [FromQuery]int pageNumber=1)
+                                                             [FromQuery] int page = 1,
+                                                             [FromQuery] int pageSize = 10)
         {
-
-
             pageSize = Math.Clamp(pageSize, 1, 50);
 
             var query = _context.Customers.Where(c => c.Orders.Any())
-                                         .OrderByDescending(c => c.Orders.Sum(o => o.TotalAmount));
+                .OrderByDescending(c => c.Orders.Sum(o => o.TotalAmount));
 
-            var totalCount= await query.CountAsync();
+            int totalCount = await query.CountAsync();
 
-            var items = await query.Skip((pageNumber - 1) * pageSize)
-                             .Take(pageSize)
-                             .Select(q => new
-            {
-                customerId = q.Id,
-                customerName = q.Name,
-                customerEmail = q.Email,
-                totalOrders = q.Orders.Count(o=>(!from.HasValue||o.OrderDate>= from)&&(!to.HasValue||o.OrderDate<=to)),
-                totalSpend = q.Orders.Where(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)).Sum(o => o.TotalAmount),
-                averageOrderValue = Math.Round(q.Orders.Where(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)).Average(o => o.TotalAmount), 2),
-                lastOrderDate = q.Orders.Where(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)).Max(o => o.CreatedAt),
-                fullyPaidOrders = q.Orders.Count(o => o.IsPaid&& (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)),
-            }).AsNoTracking().ToListAsync();
-          
+            var report = await query
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .Select(c => new
+                {
+                    customerId = c.Id,
+                    cutomerName = c.Name,
+                    customerEmail = c.Email,
+                    totalOrders = c.Orders.Count(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)),
+                    totalSpent = c.Orders.Where(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)).Sum(o => o.TotalAmount),
+                    avarageOrderValue = Math.Round(c.Orders.Where(o => (!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to)).Average(o => o.TotalAmount), 2),
+                    lastOrderPaid = c.Orders.Where(o=>o.IsPaid&&((!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to))).Max(o => (DateTime?)o.CreatedAt),// if there are no paid orders in the specified date range, this will return null instead of throwing an exception 
+                                                                                                                                                                                   // because of using the nullable closure (DateTime?)
+                    fullyPaidOrders = c.Orders.Count(o => o.IsPaid && ((!from.HasValue || o.OrderDate >= from) && (!to.HasValue || o.OrderDate <= to))),
+
+                }).AsNoTracking().ToListAsync();
+
             return Ok(new
             {
                 totalCount,
-                totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
-                currentPage=pageNumber,
-                items,
+                totalPages = (int)Math.Ceiling(await query.CountAsync() / (double)pageSize),
+                currentPage = page,
+                items = report,
             });
-                
         }
-
     }
 }

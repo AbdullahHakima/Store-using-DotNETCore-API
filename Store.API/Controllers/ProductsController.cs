@@ -66,67 +66,67 @@ public class ProductsController : ControllerBase
 
 
 
-    [HttpPost("adjust-stock")]
-    public async Task<IActionResult> adjustProductStock([FromBody] List<ProductAdjustment> adjustments)
-    {
-        if (adjustments == null || adjustments.Count == 0) 
-            return BadRequest("No adjustments provided.");
-        var productIds = adjustments.Select(a => a.ProductId);
-        var products = await _db.Products.Where(p=> productIds.Contains(p.Id)). ToListAsync();
+    //[HttpPost("adjust-stock")]
+    //public async Task<IActionResult> adjustProductStock([FromBody] List<ProductAdjustment> adjustments)
+    //{
+    //    if (adjustments == null || adjustments.Count == 0) 
+    //        return BadRequest("No adjustments provided.");
+    //    var productIds = adjustments.Select(a => a.ProductId);
+    //    var products = await _db.Products.Where(p=> productIds.Contains(p.Id)). ToListAsync();
 
-        var failers = new List<FailersAdjustment>();
-        var success = new List<SuccessAdjustmentDto>();
-        foreach (var adjustment in adjustments)
-        {
-            var product = products.FirstOrDefault(p => p.Id == adjustment.ProductId);
-            if (product is null)
-            {
-                failers.Add(new FailersAdjustment
-                {
-                    productId = adjustment.ProductId,
-                    reason = "Product not found."
-                });
-                continue; // Skip to the next adjustment
-            }
-                if(adjustment.QuantityChange == 0)
-                {
-                    failers.Add(new FailersAdjustment
-                    {
-                        productId = product.Id,
-                        reason = "No change in stock quantity."
-                    });
-                    continue; // Skip to the next adjustment
-                }
-                if (product.StockQuantity + adjustment.QuantityChange < 0)
-                {
-                    failers.Add(new FailersAdjustment
-                    {
-                        productId = product.Id,
-                        reason = $"Insufficient stock for adjustment. Current:{product.StockQuantity}, adjustment:{adjustment.QuantityChange}"
-                    });
-                    continue;
-                }
-                var oldStock = product.StockQuantity;
-                success.Add(new SuccessAdjustmentDto
-                {
-                    productId = product.Id,
-                    productName = product.Name,
-                    OldStock = oldStock,
-                    NewStock = oldStock + adjustment.QuantityChange
-                });
-                product.StockQuantity = oldStock + adjustment.QuantityChange;
+    //    var failers = new List<FailersAdjustment>();
+    //    var success = new List<SuccessAdjustmentDto>();
+    //    foreach (var adjustment in adjustments)
+    //    {
+    //        var product = products.FirstOrDefault(p => p.Id == adjustment.ProductId);
+    //        if (product is null)
+    //        {
+    //            failers.Add(new FailersAdjustment
+    //            {
+    //                productId = adjustment.ProductId,
+    //                reason = "Product not found."
+    //            });
+    //            continue; // Skip to the next adjustment
+    //        }
+    //            if(adjustment.QuantityChange == 0)
+    //            {
+    //                failers.Add(new FailersAdjustment
+    //                {
+    //                    productId = product.Id,
+    //                    reason = "No change in stock quantity."
+    //                });
+    //                continue; // Skip to the next adjustment
+    //            }
+    //            if (product.StockQuantity + adjustment.QuantityChange < 0)
+    //            {
+    //                failers.Add(new FailersAdjustment
+    //                {
+    //                    productId = product.Id,
+    //                    reason = $"Insufficient stock for adjustment. Current:{product.StockQuantity}, adjustment:{adjustment.QuantityChange}"
+    //                });
+    //                continue;
+    //            }
+    //            var oldStock = product.StockQuantity;
+    //            success.Add(new SuccessAdjustmentDto
+    //            {
+    //                productId = product.Id,
+    //                productName = product.Name,
+    //                OldStock = oldStock,
+    //                NewStock = oldStock + adjustment.QuantityChange
+    //            });
+    //            product.StockQuantity = oldStock + adjustment.QuantityChange;
             
-        }
-        if (success.Count > 0)
-        {
-            await _db.SaveChangesAsync();
-        }
-        return Ok(new
-        {
-            Success = success,
-            Failures = failers
-        });
-    }
+    //    }
+    //    if (success.Count > 0)
+    //    {
+    //        await _db.SaveChangesAsync();
+    //    }
+    //    return Ok(new
+    //    {
+    //        Success = success,
+    //        Failures = failers
+    //    });
+    //}
 
 
     [HttpGet("search")]
@@ -182,6 +182,78 @@ public class ProductsController : ControllerBase
             totalPages,
             items,
         });
+    }
+
+
+    [HttpPost("adjust-stock")]
+    public async Task<IActionResult> AdjustmentStocks([FromBody] List<ProductAdjustment> adjustments)
+    {
+        // Validate the input
+        if (adjustments is null|| adjustments.Count==0) return BadRequest("Adjustments list cannot be null or zero.");
+
+
+        // load only needed products to minimize the data transfer and memory usage
+        var products = await _db.Products.Where(p=> adjustments.Select(a=>a.ProductId).Contains(p.Id)).ToListAsync();
+
+        #region Alternative way to find the missing product ids without using LINQ's Except method
+        //var productIds = products.Select(p => p.Id).ToHashSet();
+        //var missingProductIds = (adjustments.Select(a=>a.ProductId)).Except(productIds);
+        #endregion
+        var failers = new List<FailersAdjustment>();
+        var success = new List<SuccessAdjustmentDto>();
+        foreach (var adjustment in adjustments)
+        {
+            //using the if contiue chaining for validate the failers first
+            //if the adjustment is vaild will be added to the success list after modify the product stock 
+
+            // fist check if the product exist or not
+            var product = products.FirstOrDefault(p => p.Id == adjustment.ProductId);
+            if (product == null) continue;
+
+            //second check for the adjsutment value 
+            if (adjustment.QuantityChange == 0)
+            {
+                failers.Add(new FailersAdjustment
+                {
+                    productId = adjustment.ProductId,
+                    reason = "No change in stock quantity."
+                });
+                continue;
+            }
+
+            //thrid check for the product stock if it after add the adjsutment will casue the stock be under Zero or not
+            if(adjustment.QuantityChange+product.StockQuantity<0)
+            {
+                failers.Add(new FailersAdjustment
+                {
+                    productId = adjustment.ProductId,
+                    reason = $"Insufficient stock for adjustment. Current:{product.StockQuantity}, adjustment:{adjustment.QuantityChange}"
+                });
+                continue;
+            }
+            // if the adjustment is vaild we will add it to the success list and modify the product stock
+
+            var oldStock = product.StockQuantity;
+            product.StockQuantity += adjustment.QuantityChange;
+            var newStock = product.StockQuantity;
+            success.Add(new SuccessAdjustmentDto
+            {
+                productId = product.Id,
+                productName = product.Name,
+                OldStock = oldStock,
+                NewStock = newStock 
+            });
+        }
+        if (success.Count > 0)
+        {
+            await _db.SaveChangesAsync();
+        }
+        return Ok(new
+        {
+            Success = success,
+            Failures = failers
+        });
+
     }
 
 }
