@@ -421,21 +421,6 @@ public async Task<IActionResult> CustomerSalesReport(
 **Score progression:** 7.0 → 7.7 → 9.0
 
 ---
-
-## Patterns Learned
-
-| Pattern | Description |
-|---|---|
-| Deferred execution | Build `IQueryable` fully, call `ToListAsync()` once at the end |
-| Guard clauses | Check every failure first with `continue` — success path at the bottom |
-| Batch loading | One `Contains()` query for all Ids — never query inside a loop |
-| Navigation aggregates | `Count()`, `Sum()`, `Average()`, `Max()` inside `Select()` — translated to SQL |
-| Consistent filtering | Date filters applied to every aggregate, not just one field |
-| Change tracker | Modify loaded entities directly — no `Update()` call needed |
-| Conditional save | `SaveChangesAsync()` only when there is something to write |
-| Data integrity | Never mutate source values — derive calculated values from source |
-
----
  
 ### Self-Directed — Orders Summary
  
