@@ -256,7 +256,39 @@ public class ProductsController : ControllerBase
 
     }
 
-
+    [HttpGet("GetByIdV1")]
+    public async Task<IActionResult> GetByIdWithCompiledQuery(Guid id)
+    {
+        var product = await CompiledQueries.GetProductById(_db, id);
+        if (product is null) return NotFound();
+        return Ok(product);
+    }
+    [HttpGet("{id}/GetByIdV2")]
+    public async Task<IActionResult> GetByIdWithCompiledQueryV2([FromRoute] Guid id)
+    {
+        var product = await _db.Products.Where(p => p.Id == id && p.IsActive)
+                                        .Select(p => new ProductDto
+                                        {
+                                            Id = p.Id,
+                                            Name = p.Name,
+                                            CategoryName = p.Category.Name,
+                                            Price = p.Price,
+                                            QuantityInStock = p.StockQuantity
+                                        }).FirstOrDefaultAsync();
+        if (product is null) return NotFound();
+        return Ok(product);
+    }
+    [HttpGet("GetByCategory")]
+    public async Task<IActionResult> GetProductByCategoryId(Guid categoryId)
+    {
+        var products = new List<ProductDto>();
+        await foreach(var product in CompiledQueries.GetProductsByCategoryId(_db, categoryId))
+        {
+            products.Add(product);
+        }
+        if (!products.Any()) return NotFound($"there is not products belong to the reference categoryId{categoryId} yet!");
+        return Ok(products);
+    }
 }
 
 

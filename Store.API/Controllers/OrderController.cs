@@ -225,4 +225,43 @@ public class OrderController : ControllerBase
         });
     }
 
+
+    [HttpGet("{id}/detailsV3")]
+    public async Task<IActionResult> GetOrderDetails([FromRoute] Guid id)
+    {
+      
+        var order = await _db.Orders
+            .Where(o => o.Id == id).
+            Select(o => new
+            {
+                o.Id,
+                o.OrderNumber,
+                o.OrderDate,
+                o.TotalAmount,
+                o.IsPaid,
+                CustomerName = o.Customer.Name,
+                Items = o.Items.Select(i => new
+                {
+                    ProductName = i.Product.Name,
+                    i.Quantity,
+                    TotalPrice = i.Quantity * i.UnitPrice
+                }),
+                Payment = o.Payments.Select(p => new
+                {
+                    p.Id,
+                    p.Amount,
+                    p.Method,
+                    p.RefrenceCode,
+                    p.PaidAt
+                })
+
+            }
+            ).AsNoTracking().FirstOrDefaultAsync();
+
+        // check if the referenced order exists
+        if (order is null) return NotFound($"Order with id {id} not found.");
+        return Ok( order );
+         
+    }
+
 }
