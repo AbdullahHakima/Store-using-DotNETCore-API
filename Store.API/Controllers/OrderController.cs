@@ -131,4 +131,98 @@ public class OrderController : ControllerBase
             order.IsPaid,
         });
     }
+
+    // here i use single Query which is working as cartisan product
+    // so if the order has 3 items and 2 payments the query will return 6 rows with duplicated data for the order and customer
+    // but it is useful when you have small data in the collections and if you inside transaction it will be good to use single query
+    // to avoid data inconsistency issues between the multiple queries in the split query
+
+    [HttpGet("{id}/detailsV1")]
+    public async Task<IActionResult> GetOrderDetailsv1([FromRoute] Guid id)
+    {
+        // check if the referenced order exists
+        var order= await _db.Orders
+            .Include(o=>o.Customer)
+            .Include(o=>o.Items)
+            .ThenInclude(i=>i.Product)
+            .Include(o=>o.Payments)
+            .FirstOrDefaultAsync(o=>o.Id==id);
+
+        if (order == null) return NotFound($"Order with id {id} not found.");
+
+        return Ok(new
+        {
+            order.Id,
+            order.OrderNumber,
+            order.OrderDate,
+            order.TotalAmount,
+            order.IsPaid,
+            CustomerName = order.Customer.Name,
+            Items = order.Items.Select(i => new
+            {
+                ProductName = i.Product.Name,
+                i.Quantity,
+                TotalPrice = i.Quantity * i.UnitPrice
+            }),
+            Payments = order.Payments.Select(p => new
+            {
+                p.Id,
+                p.Amount,
+                p.Method,
+                p.RefrenceCode,
+                p.PaidAt
+            })
+        });
+
+    }
+
+    // here i make same Query as detailsV1 but with AsSplitQuery
+    // to avoid cartesian explosion problem when we have multiple collections in the same query
+    // but for this sample of data the version one is useful 
+    // use the SplitQury when you have
+    // 1- multiple collections in the same query
+    // 2- large data in the collections which can cause performance issues when loading all data in one query
+    // 3- you want to optimize the query performance by reducing the amount of data loaded in memory at once
+    // do not use SplitQuery when you have
+    // 1- small data in the collections which can be loaded in one query without performance issues
+    //2- inside a transaction scope where the Db status could changed between the multiple queries which can cause data inconsistency issues
+    //3- using the Select() which do not need to load the whole entity columns it just query about what you asking for..
+    [HttpGet("{id}/detailsV2")]
+    public async Task<IActionResult> GetOrderDetailsv2([FromRoute] Guid id)
+    {
+        // check if the referenced order exists
+
+        var order = await _db.Orders
+            .Include(o => o.Customer)
+            .Include(o => o.Items)
+            .ThenInclude(i => i.Product)
+            .Include(o => o.Payments)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(o => o.Id == id);
+        if (order == null) return NotFound($"Order with id {id} not found.");
+        return Ok(new
+        {
+            order.Id,
+            order.OrderNumber,
+            order.OrderDate,
+            order.TotalAmount,
+            order.IsPaid,
+            CustomerName = order.Customer.Name,
+            Items = order.Items.Select(i => new
+            {
+                ProductName = i.Product.Name,
+                i.Quantity,
+                TotalPrice = i.Quantity * i.UnitPrice
+            }),
+            Payments = order.Payments.Select(p => new
+            {
+                p.Id,
+                p.Amount,
+                p.Method,
+                p.RefrenceCode,
+                p.PaidAt
+            })
+        });
+    }
+
 }
