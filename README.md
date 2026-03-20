@@ -744,8 +744,210 @@ public async Task<IActionResult> GetOrderDetailsV3([FromRoute] Guid id)
 **SQL observation:** 14 columns vs ~40 in Version A. Same JOIN structure, 65% fewer bytes. EF computed `TotalPrice` as `CAST(Quantity AS decimal) * UnitPrice` directly in SQL — no C# math after the fact.
  
 **Score:** 10/10 across all three dimensions
+ ---
+ 
+### Task 08 — Compiled Queries
+ 
+**Level:** Performance
+**Endpoints:** `GET /api/products/{id}`, `GET /api/products/by-category/{categoryId}`
+ 
+**Requirements:**
+1. Create a static `CompiledQueries` class in `Store.Infrastructure/Persistence/`
+2. Write a compiled query returning a single product by Id
+3. Write a compiled query returning all active products for a given categoryId
+4. Use both in controller endpoints
+5. Capture SQL and compare to normal query
+6. Explain the difference between compiled query and EF's built-in query cache
+ 
+**Key concepts practiced:**
+- `EF.CompileAsyncQuery()` — pays LINQ-to-SQL translation cost once at startup
+- `static readonly` field — one delegate instance shared across all requests, never recreated
+- Named DTO required — anonymous types cannot be used as return types in compiled queries
+- Sync terminators inside compiled queries — `FirstOrDefault()` not `FirstOrDefaultAsync()`
+- Single entity → `Task<T?>`, collection → `IAsyncEnumerable<T>` streamed with `await foreach`
+- SQL is identical to normal query — the difference is when translation happens, not what SQL is produced
+- `!products.Any()` not `products is null` — a `new List<T>()` is never null
+ 
+**The key distinction:**
+- EF built-in cache: still runs expression tree parsing + hash lookup on every call even on a hit
+- Compiled query: stores result as a .NET delegate — no parsing, no hashing, direct invocation
+- Benefit is measurable only on hot-path endpoints called thousands of times per minute
+ 
+**Final submitted solution:**
+```csharp
+public static class CompiledQueries
+{
+    public static readonly Func<StoreDbContext, Guid, Task<ProductDto?>>
+        GetProductById = EF.CompileAsyncQuery(
+            (StoreDbContext db, Guid id) =>
+                db.Products
+                  .Where(p => p.Id == id && p.IsActive)
+                  .Select(p => new ProductDto
+                  {
+                      Id              = p.Id,
+                      Name            = p.Name,
+                      CategoryName    = p.Category.Name,
+                      Price           = p.Price,
+                      QuantityInStock = p.StockQuantity
+                  })
+                  .FirstOrDefault());
+ 
+    public static readonly Func<StoreDbContext, Guid, IAsyncEnumerable<ProductDto>>
+        GetProductsByCategoryId = EF.CompileAsyncQuery(
+            (StoreDbContext db, Guid categoryId) =>
+                db.Products
+                  .Where(p => p.CategoryId == categoryId && p.IsActive)
+                  .Select(p => new ProductDto
+                  {
+                      Id              = p.Id,
+                      Name            = p.Name,
+                      CategoryName    = p.Category.Name,
+                      Price           = p.Price,
+                      QuantityInStock = p.StockQuantity
+                  }));
+}
+ 
+// Controller usage
+[HttpGet("{id}/compiled")]
+public async Task<IActionResult> GetById([FromRoute] Guid id)
+{
+    var product = await CompiledQueries.GetProductById(_db, id);
+    if (product is null) return NotFound();
+    return Ok(product);
+}
+ 
+[HttpGet("by-category")]
+public async Task<IActionResult> GetByCategory([FromQuery] Guid categoryId)
+{
+    var products = new List<ProductDto>();
+    await foreach (var p in CompiledQueries.GetProductsByCategoryId(_db, categoryId))
+        products.Add(p);
+ 
+    if (!products.Any()) return NotFound($"No products found for category {categoryId}.");
+    return Ok(products);
+}
+```
+ 
+**Score:** 9.3/10 first attempt
  
 ---
+ 
+### Task 09 — Bulk Operations: ExecuteUpdateAsync and ExecuteDeleteAsync
+ 
+**Level:** Performance + Danger
+**Endpoints:** `PATCH /api/products/deactivate-by-category/{categoryId}`, `PATCH /api/products/apply-discount/{categoryId}`, `DELETE /api/products/hard-delete-inactive`
+ 
+**Requirements:**
+1. Deactivate all products in a category with one UPDATE statement
+2. Apply a percentage price discount across a category — formula pushed into SQL
+3. Hard-delete all inactive products permanently
+4. Capture SQL for all three — verify single statement per operation
+5. Explain why ExecuteDeleteAsync is dangerous
+ 
+**Key concepts practiced:**
+- `ExecuteUpdateAsync` — single UPDATE statement, no entities loaded, no SaveChanges needed
+- `ExecuteDeleteAsync` — single DELETE statement, bypasses change tracker entirely
+- SQL formula expressions — `p => p.Price * (1 - discount)` translates to `[Price] * @p` in SQL
+- Pre-computed C# values generate per-row UPDATEs — column references generate one bulk UPDATE
+- `IgnoreQueryFilters()` required for clean bulk operations — without it EF may add a SELECT first
+- Cascade side effects — `ExecuteDeleteAsync` on Products also deleted OrderItems silently
+- `ExecuteUpdate/Delete` bypass: global query filters, AuditInterceptor, soft delete, RowVersion
+ 
+**The tradeoff:**
+- Load + loop: per-row validation possible, interceptors fire, change tracker tracks, N+1 queries
+- ExecuteUpdateAsync: one SQL statement, no validation per row, interceptors skipped, fastest possible
+ 
+**Use ExecuteUpdateAsync/DeleteAsync when:**
+- Operation is purely mechanical — set a flag, apply a formula
+- No per-row business logic needed
+- You have verified cascade side effects
+ 
+**Avoid when:**
+- Each row needs individual validation
+- You need audit trail via interceptors
+- Cascades could destroy related data unexpectedly
+ 
+**Final submitted solutions:**
+```csharp
+// Deactivate all products in a category — single UPDATE
+[HttpPatch("deactivate-by-category/{categoryId}")]
+public async Task<IActionResult> DeactivateProductsByCategory([FromRoute] Guid categoryId)
+{
+    int affectedRows = await _db.Products
+        .Where(p => p.CategoryId == categoryId)
+        .ExecuteUpdateAsync(s => s.SetProperty(p => p.IsActive, false));
+ 
+    return Ok(new { NumberOfRowsAffected = affectedRows });
+}
+ 
+// Apply discount — formula pushed into SQL, one UPDATE
+[HttpPatch("apply-discount/{categoryId}/v2")]
+public async Task<IActionResult> ApplyDiscountV2([FromRoute] Guid categoryId,
+                                                 [FromBody] decimal percentage)
+{
+    if (percentage <= 0 || percentage >= 100)
+        return BadRequest("Percentage must be between 0 and 100.");
+ 
+    decimal discount = percentage / 100;
+ 
+    int affectedRows = await _db.Products
+        .Where(p => p.CategoryId == categoryId && p.IsActive)
+        .ExecuteUpdateAsync(s => s.SetProperty(p => p.Price, p => p.Price * (1 - discount)));
+ 
+    return Ok(new { numberOfRowsAffected = affectedRows });
+}
+ 
+// Hard delete — explicit transaction required because of FK constraint on OrderItems
+// OrderItems must be deleted first, then Products — both in one transaction
+[HttpDelete("hard-delete-inactive")]
+public async Task<IActionResult> HardDeleteInActiveProduct()
+{
+    await using var transaction = await _db.Database.BeginTransactionAsync();
+    try
+    {
+        // Delete child rows first — FK constraint prevents deleting Products with existing OrderItems
+        await _db.OrderItems
+            .Where(oi => !oi.Product.IsActive)
+            .ExecuteDeleteAsync();
+ 
+        // Now safe to delete the parent rows
+        int numberOfDeleteProducts = await _db.Products
+            .Where(p => !p.IsActive)
+            .ExecuteDeleteAsync();
+ 
+        await transaction.CommitAsync();
+        return Ok(new { TotalCountOfDeleteProducts = numberOfDeleteProducts });
+    }
+    catch (Exception ex)
+    {
+        await transaction.RollbackAsync();
+        return StatusCode(StatusCodes.Status500InternalServerError,
+            $"An error occurred while deleting products: {ex.Message}");
+    }
+}
+```
+ 
+**Why the transaction is necessary here:**
+If the OrderItems delete succeeds but the Products delete fails, without a transaction you end up with order history permanently destroyed but inactive products still in the table. The transaction guarantees both succeed or both roll back.
+ 
+**SQL observations:**
+- Deactivate: `UPDATE [p] SET [p].[IsActive] = @p FROM [Products] WHERE [CategoryId] = @categoryId` — one statement
+- Discount V2: `UPDATE [p] SET [p].[Price] = [p].[Price] * @p FROM [Products] WHERE ...` — formula in SQL
+- Hard delete v1 (naive): EF auto-generated two DELETEs — OrderItems first, then Products. Side effect was invisible from C#.
+- Hard delete v2 (refactored): Explicit transaction wrapping two `ExecuteDeleteAsync` calls. OrderItems deleted first consciously, then Products. If either fails the whole operation rolls back.
+ 
+**Key refactor lesson:**
+Reading the SQL output from v1 revealed that EF silently deleted order history as a cascade side effect. The refactored version makes both deletions explicit and atomic — the developer controls the order, the transaction guarantees consistency.
+ 
+**`await using` vs `using` for async transactions:**
+Always use `await using var transaction = ...` not `using (var transaction = ...)` — the async `DisposeAsync()` must be awaited, not called synchronously.
+ 
+**ExecuteDeleteAsync danger sentence:**
+*"ExecuteDeleteAsync bypasses global query filters, soft delete, and all interceptors — rows are permanently removed with no audit trail, no undo, and cascade side effects that are invisible from the C# code."*
+ 
+**Score:** 9.3/10 final (refactored from 8.7)
+ 
+ ---
  
 ## Patterns Learned
  
@@ -764,9 +966,16 @@ public async Task<IActionResult> GetOrderDetailsV3([FromRoute] Guid id)
 | Whole-request vs per-item validation | Check whole-request preconditions first, then validate per item in the loop |
 | Names not Guids in responses | Display-facing fields are always human-readable strings |
 | GroupBy aggregates | `g.Count()`, `g.Sum()` per group — not a pre-computed whole-table value |
-| AsSplitQuery() | Use when loading 2+ large collections — eliminates cartesian row multiplication |
+| Compiled queries | `EF.CompileAsyncQuery` — translate once at startup, skip cache lookup on every call |
+| IAsyncEnumerable streaming | `await foreach` — stream collection results without buffering all rows |
+| List is never null | Use `!list.Any()` not `list is null` — a constructed List cannot be null |
 | Select() over Include() for reads | Select() fetches only named columns — Include() loads full entities including unused columns |
 | SQL logging | `LogTo` + `EnableSensitiveDataLogging` — always verify what EF actually sends |
+| ExecuteUpdateAsync | Single UPDATE statement — no entities loaded, no SaveChanges, formula pushed into SQL |
+| ExecuteDeleteAsync | Single DELETE — bypasses everything, permanent, cascade side effects invisible from C# |
+| SQL formula expressions | Column reference in lambda → SQL arithmetic. Pre-computed C# value → per-row UPDATEs |
+| IgnoreQueryFilters for bulk ops | Prevents EF adding a SELECT before UPDATE/DELETE when global filters are active |
+| await using for transactions | Always `await using var tx = ...` not `using ()` — ensures DisposeAsync is awaited |
  
 ---
  
@@ -782,5 +991,8 @@ public async Task<IActionResult> GetOrderDetailsV3([FromRoute] Guid id)
 | Task 05 — Transfer | 7.0 | 9.3 |
 | Task 06 — Split Query | 9/10 code | 9/10 |
 | Task 07 — Projection | 10/10 | 10/10 |
+| Task 08 — Compiled Queries | 9.3/10 | 9.3/10 |
+| Task 09 — Bulk Operations | 7.0 | 8.7 |
  
-First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0**
+ 
+First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0 → 9.3 → 7.0**
