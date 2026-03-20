@@ -115,7 +115,7 @@ public class ProductsController : ControllerBase
     //                NewStock = oldStock + adjustment.QuantityChange
     //            });
     //            product.StockQuantity = oldStock + adjustment.QuantityChange;
-            
+
     //    }
     //    if (success.Count > 0)
     //    {
@@ -135,28 +135,28 @@ public class ProductsController : ControllerBase
                                                        [FromQuery] decimal? minPrice,
                                                        [FromQuery] decimal? maxPrice,
                                                        [FromQuery] bool? InStock,
-                                                       [FromQuery] int pageSize=10,
-                                                       [FromQuery] int page=1)
+                                                       [FromQuery] int pageSize = 10,
+                                                       [FromQuery] int page = 1)
     {
         pageSize = Math.Clamp(pageSize, 1, 50);// clamp used to restrict the number of products in single page between min value (1) to the max value(50) 
                                                // if the user enter more that the max value 50 the clamp automatically set it to 50 and
                                                // if the user enter less than the min value 1 the clamp automatically set it to 1
-        var query = _db.Products.Where(p=>p.IsActive)
+        var query = _db.Products.Where(p => p.IsActive)
                                 .AsQueryable();
 
 
         if (!string.IsNullOrEmpty(name))
-            query =  query.Where(q => q.Name.Contains(name));// i used contains instead of using equality operator beacasue the quality operator need the user to enter the ful name of the product which is not realistic 
-                                                             // in searching about products and the contains() is translated to the Sql as LIKE %name% which is more flexible for searching about products by their names
+            query = query.Where(q => q.Name.Contains(name));// i used contains instead of using equality operator beacasue the quality operator need the user to enter the ful name of the product which is not realistic 
+                                                            // in searching about products and the contains() is translated to the Sql as LIKE %name% which is more flexible for searching about products by their names
         if (categoryId.HasValue)
             query = query.Where(q => q.CategoryId == categoryId);
-        if(minPrice.HasValue)
-            query= query.Where(q=>q.Price>= minPrice);
-        if(maxPrice.HasValue)
-            query= query.Where(q=>q.Price<= maxPrice);
-        if(InStock.HasValue)
-            query= query.Where(q=>q.StockQuantity > 0 == InStock.Value);// if the user want to search about products that are in stock the query will filter the products that have stock quantity more than 0
-                                                                        // and if the user want to search about products that are not in stock the query will filter the products that have stock quantity equal to 0
+        if (minPrice.HasValue)
+            query = query.Where(q => q.Price >= minPrice);
+        if (maxPrice.HasValue)
+            query = query.Where(q => q.Price <= maxPrice);
+        if (InStock.HasValue)
+            query = query.Where(q => q.StockQuantity > 0 == InStock.Value);// if the user want to search about products that are in stock the query will filter the products that have stock quantity more than 0
+                                                                           // and if the user want to search about products that are not in stock the query will filter the products that have stock quantity equal to 0
         var totalItems = await query.CountAsync();
 
         var items = await query.OrderBy(p => p.Name)
@@ -171,7 +171,7 @@ public class ProductsController : ControllerBase
                 CategoryName = p.Category.Name,
                 Tags = p.Tags.Select(t => t.Name).ToList()
             }).AsNoTracking().ToListAsync(); // order by name to have a consistent order of products across pages
-       
+
 
         var totalPages = (int)Math.Ceiling(totalItems / (double)pageSize);
 
@@ -189,11 +189,11 @@ public class ProductsController : ControllerBase
     public async Task<IActionResult> AdjustmentStocks([FromBody] List<ProductAdjustment> adjustments)
     {
         // Validate the input
-        if (adjustments is null|| adjustments.Count==0) return BadRequest("Adjustments list cannot be null or zero.");
+        if (adjustments is null || adjustments.Count == 0) return BadRequest("Adjustments list cannot be null or zero.");
 
 
         // load only needed products to minimize the data transfer and memory usage
-        var products = await _db.Products.Where(p=> adjustments.Select(a=>a.ProductId).Contains(p.Id)).ToListAsync();
+        var products = await _db.Products.Where(p => adjustments.Select(a => a.ProductId).Contains(p.Id)).ToListAsync();
 
         #region Alternative way to find the missing product ids without using LINQ's Except method
         //var productIds = products.Select(p => p.Id).ToHashSet();
@@ -222,7 +222,7 @@ public class ProductsController : ControllerBase
             }
 
             //thrid check for the product stock if it after add the adjsutment will casue the stock be under Zero or not
-            if(adjustment.QuantityChange+product.StockQuantity<0)
+            if (adjustment.QuantityChange + product.StockQuantity < 0)
             {
                 failers.Add(new FailersAdjustment
                 {
@@ -241,7 +241,7 @@ public class ProductsController : ControllerBase
                 productId = product.Id,
                 productName = product.Name,
                 OldStock = oldStock,
-                NewStock = newStock 
+                NewStock = newStock
             });
         }
         if (success.Count > 0)
@@ -282,13 +282,98 @@ public class ProductsController : ControllerBase
     public async Task<IActionResult> GetProductByCategoryId(Guid categoryId)
     {
         var products = new List<ProductDto>();
-        await foreach(var product in CompiledQueries.GetProductsByCategoryId(_db, categoryId))
+        await foreach (var product in CompiledQueries.GetProductsByCategoryId(_db, categoryId))
         {
             products.Add(product);
         }
         if (!products.Any()) return NotFound($"there is not products belong to the reference categoryId{categoryId} yet!");
         return Ok(products);
     }
+
+
+    [HttpPatch("deactivate-by-category/{categoryId}")]
+    public async Task<IActionResult> DeactivateProductsByCategory([FromRoute]Guid categoryId)
+    {
+        int affectedRows = await _db.Products.Where(p => p.CategoryId == categoryId)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.IsActive, false));
+        
+        return Ok(new
+        {
+            NumberOfRowsAffected = affectedRows,
+        });
+    }
+    [HttpPatch("apply-discount/{categoryId}/v1")]
+    public async Task<IActionResult> ApplyDiscountv1([FromRoute] Guid categoryId,
+                                                   [FromBody] decimal percentage)
+    {
+        if (percentage <= 0 || percentage >= 100)
+            return BadRequest("Percentage must be between 0 and 100.");
+        var products = await _db.Products.Where(p => p.CategoryId == categoryId && p.IsActive).ToListAsync();
+        if (!products.Any()) return NotFound($"there is not active products belong to the reference categoryId{categoryId} yet!");
+        decimal discount = percentage / 100;
+        foreach (var product in products)
+        {
+            product.Price *= (1 -  discount);// percentage:10=> price:572 totalDiscount=> price-= price * (10/100)
+                                                                         // price-= price*0.1 => price= price - 0.1*price => price= 0.9*price 
+        }
+        int numberOfRowsAffected = await _db.SaveChangesAsync();
+        return Ok(new
+        {
+            NumberOfRowsAffected = numberOfRowsAffected,
+        });
+    }
+    [HttpPatch("apply-discount/{categoryId}/v2")]
+    public async Task<IActionResult> ApplayDiscountV2([FromRoute] Guid categoryId,
+                                                      [FromBody] decimal percentage)
+    {
+        if (percentage <= 0 || percentage >= 100)
+            return BadRequest("Percentage must be between 0 and 100.");
+        decimal discount = percentage / 100;
+        int affectedRows = await _db.Products.Where(p => p.CategoryId == categoryId && p.IsActive)
+            .ExecuteUpdateAsync(s => s.SetProperty
+            (p => p.Price,
+            p=>p.Price*(1-discount)// percentage:10=> price:572 totalDiscount=> price-= price * (10/100)
+                                   // price-= price*0.1 => price= price - 0.1*price => price= 0.9*price
+            ));
+        // i don't need to use SaveChangesAsync() because the ExecuteUpdateAsync method already execute the update query directly in the database
+        // without loading the entities into memory and tracking them
+        return Ok(new
+        {
+            numberOfRowsAffected=affectedRows,
+        });
+
+    }
+
+    [HttpDelete("hard-delete-inactive")]
+    public async Task<IActionResult> HardDeleteInActiveProduct()
+    {
+        // find all OrderItems first beacuse of the constraints on the products table is ristict on delete
+        // and if i try to delete the products without delete the related order items first i will get an exception
+        // because of the foreign key constraint
+
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+        {
+            try
+            {
+                await _db.OrderItems.Where(oi => !oi.Product.IsActive).ExecuteDeleteAsync();
+
+                // This method will delete all products that are not active (IsActive = false) from the database.
+                int numberOfDeleteProducts = await _db.Products.Where(p => !p.IsActive).ExecuteDeleteAsync();
+                await transaction.CommitAsync();
+                return Ok(new
+                {
+                    TotalCountOfDeleteProducts = numberOfDeleteProducts
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return StatusCode(StatusCodes.Status500InternalServerError, $"An error occurred while deleting products: {ex.Message}");
+            }
+        }
+        
+    }
+
 }
 
 
