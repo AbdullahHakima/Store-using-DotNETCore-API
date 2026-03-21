@@ -949,6 +949,124 @@ Always use `await using var transaction = ...` not `using (var transaction = ...
  
  ---
  
+### Task 10 — Explicit Transactions with Savepoints
+ 
+**Level:** Transactions
+**Endpoint:** `POST /api/orders/{id}/confirm-with-stock`
+ 
+**Requirements:**
+1. Load order with items and products in one query
+2. Validate: order must be Pending, all products must have sufficient stock — before opening any transaction
+3. Inside one transaction: confirm order → reduce stock → create StockMovement audit records
+4. Place a savepoint named `"StockReduced"` after stock reduction
+5. If movement record creation fails, roll back to savepoint and commit — preserving the critical operations
+6. Return order info, items processed, and movement records created
+ 
+**Key concepts practiced:**
+- `await using var tx = await _db.Database.BeginTransactionAsync()` — async disposal
+- Three `SaveChangesAsync()` calls inside one transaction — all atomic until `CommitAsync()`
+- `CreateSavepointAsync("name")` — named checkpoint inside a live transaction
+- `RollbackToSavepointAsync("name")` — rewinds to checkpoint, transaction stays alive
+- After `RollbackToSavepoint`, call `CommitAsync()` to keep the work before the checkpoint
+- Validation always runs before opening the transaction — never open a transaction to validate
+- No `Update()` calls needed — change tracker detects modifications on loaded entities
+- `stockMovements` declared before `try` so it is accessible in the response outside the block
+ 
+**The savepoint decision:**
+The savepoint sits between stock reduction (critical) and movement record creation (audit trail). If the audit trail fails, the business-critical operations — order confirmed, stock reduced — are preserved by rolling back to the savepoint and committing. The audit trail failure is acceptable and recoverable. Losing the order confirmation is not.
+ 
+**Final submitted solution:**
+```csharp
+[HttpPost("{id}/confirm-with-stock")]
+public async Task<IActionResult> ConfirmOrderWithStockCheck([FromRoute] Guid id)
+{
+    var order = await _db.Orders
+        .Include(o => o.Items)
+            .ThenInclude(i => i.Product)
+        .FirstOrDefaultAsync(o => o.Id == id);
+ 
+    if (order is null) return NotFound($"Order with id {id} not found.");
+    if (order.Status != OrderStatus.Pending)
+        return BadRequest("Only pending orders can be confirmed.");
+ 
+    var insufficientProducts = new List<InsufficientProductsDto>();
+    foreach (var item in order.Items)
+    {
+        if (item.Product.StockQuantity < item.Quantity)
+            insufficientProducts.Add(new InsufficientProductsDto
+            {
+                ProductId = item.ProductId,
+                Reason    = $"Insufficient stock for {item.Product.Name}. " +
+                            $"Available: {item.Product.StockQuantity}, Required: {item.Quantity}"
+            });
+    }
+    if (insufficientProducts.Any())
+        return BadRequest(new { InsufficientProducts = insufficientProducts });
+ 
+    var stockMovements = new List<StockMovement>();
+    await using var transaction = await _db.Database.BeginTransactionAsync();
+    try
+    {
+        // Step 1 — confirm the order
+        order.Status = OrderStatus.Confirmed;
+        await _db.SaveChangesAsync();
+ 
+        // Step 2 — reduce stock
+        foreach (var item in order.Items)
+            item.Product.StockQuantity -= item.Quantity;
+        await _db.SaveChangesAsync();
+ 
+        // Savepoint — order confirmed + stock reduced are safe beyond this point
+        await transaction.CreateSavepointAsync("StockReduced");
+ 
+        // Step 3 — create audit records
+        stockMovements = order.Items.Select(i => new StockMovement
+        {
+            ProductId      = i.ProductId,
+            OrderId        = order.Id,
+            Order          = order,
+            QuantityChange = -i.Quantity,
+            Reason         = $"Order {order.OrderNumber} confirmed",
+            MovementDate   = DateTime.UtcNow,
+            Product        = i.Product
+        }).ToList();
+ 
+        await _db.StockMovements.AddRangeAsync(stockMovements);
+        await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
+    }
+    catch (Exception)
+    {
+        // Roll back to savepoint — order confirmed + stock reduced preserved
+        // Only audit records lost — acceptable, can be recreated later
+        await transaction.RollbackToSavepointAsync("StockReduced");
+        await transaction.CommitAsync();
+    }
+ 
+    return Ok(new
+    {
+        OrderId                = order.Id,
+        order.OrderNumber,
+        Status                 = order.Status.ToString(),
+        ItemsProcessed         = order.Items.Select(i => new
+        {
+            ProductName = i.Product.Name,
+            i.Quantity
+        }),
+        MovementRecordsCreated = stockMovements.Select(s => new
+        {
+            s.Id,
+            s.QuantityChange,
+            s.Reason
+        })
+    });
+}
+```
+ 
+**Score:** 7.3 first attempt → 9.3 final
+ 
+---
+ 
 ## Patterns Learned
  
 | Pattern | Description |
@@ -976,7 +1094,10 @@ Always use `await using var transaction = ...` not `using (var transaction = ...
 | SQL formula expressions | Column reference in lambda → SQL arithmetic. Pre-computed C# value → per-row UPDATEs |
 | IgnoreQueryFilters for bulk ops | Prevents EF adding a SELECT before UPDATE/DELETE when global filters are active |
 | await using for transactions | Always `await using var tx = ...` not `using ()` — ensures DisposeAsync is awaited |
- 
+| Savepoints | `CreateSavepointAsync` + `RollbackToSavepointAsync` + `CommitAsync` — partial rollback without losing critical work |
+| Validation before transaction | Never open a transaction to validate — validate first, open only when ready to write |
+| Change tracker on loaded entities | No `Update()` needed — modifying a loaded entity is detected automatically |
+
 ---
  
 ## Concept Deep Dive — Expression Trees
@@ -1145,6 +1266,9 @@ A **compiled query** (`EF.CompileAsyncQuery`) caches the result of steps 5–6 a
 | Task 07 — Projection | 10/10 | 10/10 |
 | Task 08 — Compiled Queries | 9.3/10 | 9.3/10 |
 | Task 09 — Bulk Operations | 7.0 | 8.7 |
+| Task 10 — Transactions | 7.3 | 9.3 |
  
  
-First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0 → 9.3 → 7.0**
+First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0 → 9.3 → 7.0 → 7.3**
+ 
+Ten tasks completed across two levels — business logic patterns (Tasks 01–05) and EF Core performance and internals (Tasks 06–10). Starting score trend went from 3.7 to consistently 7+ across all new tasks.
