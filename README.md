@@ -1272,3 +1272,215 @@ A **compiled query** (`EF.CompileAsyncQuery`) caches the result of steps 5–6 a
 First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0 → 9.3 → 7.0 → 7.3**
  
 Ten tasks completed across two levels — business logic patterns (Tasks 01–05) and EF Core performance and internals (Tasks 06–10). Starting score trend went from 3.7 to consistently 7+ across all new tasks.
+
+---
+ 
+## Direction A — Application Layer
+ 
+> Added after completing all 10 EF Core tasks. The goal: transform the store from controllers-calling-DbContext directly into a properly layered system that mirrors production architecture.
+ 
+---
+ 
+### Why the Application Layer
+ 
+After Task 10, the store looked like this:
+ 
+```
+HTTP Request → Controller → StoreDbContext → Database
+```
+ 
+The controller was doing everything — validation, business logic, EF Core queries, response shaping. This works for learning but breaks down in production because:
+ 
+- **Untestable** — you cannot unit test a controller that depends on a real database
+- **No separation of concerns** — changing the database technology requires touching every controller
+- **No reuse** — logic written in one controller cannot be called from another without duplication
+- **No contract** — nothing enforces what a feature must do vs how it does it
+ 
+After Direction A, the architecture looks like this:
+ 
+```
+HTTP Request → Controller → IService (interface) → ServiceImpl → StoreDbContext → Database
+```
+ 
+The controller only translates HTTP. The interface defines the contract. The service holds all logic. The infrastructure holds all EF Core code. Each layer can change independently.
+ 
+---
+ 
+### What changed and why — layer by layer
+ 
+#### Store.Domain — unchanged
+ 
+Pure C# entities, value objects, enums, interfaces. Zero dependencies on anything outside itself. This layer was already correct from Day 1.
+ 
+#### Store.Application — new project
+ 
+Defines **what** the system can do. No EF Core, no HTTP, no infrastructure concerns.
+ 
+```
+Store.Application/
+├── Common/
+│   └── Result.cs          ← Result<T> pattern — replaces exceptions for business failures
+├── DTOs/
+│   ├── Products/          ← typed request and response shapes
+│   └── Orders/
+├── Interfaces/
+│   ├── IProductService.cs ← contracts — what each service must do
+│   └── IOrderService.cs
+└── DependencyInjection.cs ← AddApplication() extension method
+```
+ 
+**Dependency rule:** `Store.Application` references only `Store.Domain`. It never references EF Core, ASP.NET Core, or `Store.Infrastructure`.
+ 
+#### Store.Infrastructure — expanded
+ 
+Implements **how** the system does what Application defined. All EF Core lives here.
+ 
+```
+Store.Infrastructure/
+├── Persistence/
+│   └── StoreDbContext.cs
+├── Configurations/        ← Fluent API
+├── Interceptors/          ← AuditInterceptor
+├── Services/              ← new: service implementations
+│   ├── ProductService.cs  ← implements IProductService
+│   └── OrderService.cs    ← implements IOrderService
+└── DependencyInjection.cs ← AddInfrastructure() — registers DbContext + services
+```
+ 
+**Dependency rule:** `Store.Infrastructure` references `Store.Application` and `Store.Domain`. It never references `Store.API`.
+ 
+#### Store.API — thinned
+ 
+Only speaks HTTP. No business logic, no EF Core.
+ 
+```
+Store.API/
+├── Controllers/           ← inject IService, call service, return result.ToActionResult(this)
+├── Extensions/
+│   └── ResultExtensions.cs ← maps Result<T> to IActionResult
+├── Middleware/
+│   └── ExceptionHandlingMiddleware.cs ← catches all unhandled exceptions
+└── Program.cs             ← builder.Services.AddInfrastructure().AddApplication()
+```
+ 
+**Dependency rule:** `Store.API` references `Store.Application` (for interfaces and DTOs) and `Store.Infrastructure` (via DI only — never directly).
+ 
+---
+ 
+### The dependency rule visualised
+ 
+```
+Store.API
+    ↓ references
+Store.Application  ←────────────  Store.Infrastructure
+    ↓ references                       ↓ references
+Store.Domain  ←────────────────── Store.Domain
+```
+ 
+Arrows point inward. Nothing points outward. `Store.Domain` knows about nothing. `Store.Infrastructure` knows about `Store.Domain` and `Store.Application`. `Store.API` knows about `Store.Application` but never calls `Store.Infrastructure` directly — only through DI.
+ 
+---
+ 
+### Task A1 — Result\<T\> Pattern
+ 
+**What it solves:** Services need to communicate failures to controllers without throwing exceptions. Exceptions are expensive, swallowed silently by try/catch, and carry no HTTP semantics. `Result<T>` wraps either a success value or a failure with a status code — the controller maps it to HTTP in one line.
+ 
+**Before:**
+```csharp
+// controller doing validation and returning HTTP directly
+var product = await _db.Products.FindAsync(id);
+if (product is null) return NotFound("not found");
+return Ok(product);
+```
+ 
+**After:**
+```csharp
+// controller knows nothing — three lines total
+var result = await _productService.GetByIdAsync(id);
+return result.ToActionResult(this);
+```
+ 
+**Key design decisions:**
+- Private constructor — only factory methods can create a Result. Impossible to create invalid state.
+- `IsFailure` is computed from `IsSuccess` — single source of truth, never out of sync
+- StatusCode travels with the Result — the controller extension maps it to HTTP without switch logic in every controller
+- Two versions: `Result<T>` for operations returning data, `Result` for operations returning nothing
+ 
+```csharp
+// Store.Application/Common/Result.cs
+public class Result<T>
+{
+    public bool   IsSuccess  { get; }
+    public bool   IsFailure  => !IsSuccess;
+    public T?     Value      { get; }
+    public string Error      { get; } = string.Empty;
+    public int    StatusCode { get; }
+ 
+    private Result(bool isSuccess, T? value, string error, int statusCode)
+    { IsSuccess = isSuccess; Value = value; Error = error; StatusCode = statusCode; }
+ 
+    public static Result<T> Success(T value)       => new(true,  value,   string.Empty, 200);
+    public static Result<T> NotFound(string error) => new(false, default, error,        404);
+    public static Result<T> BadRequest(string error)=> new(false, default, error,       400);
+    public static Result<T> Conflict(string error) => new(false, default, error,        409);
+    public static Result<T> ServerError(string error)=>new(false, default, error,       500);
+}
+```
+ 
+```csharp
+// Store.API/Extensions/ResultExtensions.cs
+public static IActionResult ToActionResult<T>(this Result<T> result, ControllerBase controller)
+{
+    if (result.IsSuccess) return controller.Ok(result.Value);
+    return result.StatusCode switch
+    {
+        404 => controller.NotFound(new   { error = result.Error }),
+        400 => controller.BadRequest(new { error = result.Error }),
+        409 => controller.Conflict(new   { error = result.Error }),
+        _   => controller.StatusCode(500, new { error = result.Error })
+    };
+}
+```
+ 
+---
+ 
+### Task A2 — IProductService extraction
+ 
+**What changed:** All product query logic moved from `ProductsController` into `ProductService` in `Store.Infrastructure/Services/`. The controller went from ~60 lines to ~15 lines.
+ 
+**Key lessons:**
+- Interface lives in `Store.Application/Interfaces/` — defines the contract
+- Implementation lives in `Store.Infrastructure/Services/` — holds EF Core queries
+- `Store.Application` never references EF Core directly — only the interface is defined there
+- DTOs are records in `Store.Application/DTOs/Products/` — typed, immutable request/response shapes
+- Registered in `Store.Infrastructure/DependencyInjection.cs` as `AddScoped<IProductService, ProductService>()`
+- Extension method renamed `AddInfrastructure()` — never `AddApplication()` in the Infrastructure project
+ 
+**Common mistakes caught:**
+- `CountAsync()` must run after all filters are applied — not immediately after the base query
+- `Skip()` uses `(Page - 1) * PageSize` — not `(PageSize - 1) * PageSize`
+- `Math.Ceiling` for total pages — `Math.Round` loses the last page when count is not divisible
+- Price filters are inclusive: `>=` and `<=`, not `>` and `<`
+- `InStock == true` not `InStock.HasValue` — the latter applies the filter even when the user sends `false`
+ 
+**Final controller shape:**
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+public class ProductsController : ControllerBase
+{
+    private readonly IProductService _productService;
+    public ProductsController(IProductService productService)
+        => _productService = productService;
+ 
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetById([FromRoute] Guid id)
+        => (await _productService.GetByIdAsync(id)).ToActionResult(this);
+ 
+    [HttpGet("search")]
+    public async Task<IActionResult> Search([FromQuery] ProductSearchRequest request)
+        => (await _productService.SearchAsync(request)).ToActionResult(this);
+}
+```
+ 
+---
