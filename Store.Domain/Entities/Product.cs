@@ -14,5 +14,6 @@ public class Product : BaseEntity
     public Category Category { get; set; }=null!;
     public ICollection<Tag> Tags { get; set; } = [];
     public virtual ICollection<OrderItem> OrderItems { get; set; } = [];
+    public virtual ICollection<StockMovement> StockMovements { get; set; } = [];
 
 }

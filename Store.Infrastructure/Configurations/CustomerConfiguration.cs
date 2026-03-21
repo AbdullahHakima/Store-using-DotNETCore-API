@@ -26,7 +26,7 @@ public class CustomerConfiguration:IEntityTypeConfiguration<Customer>
             .IsUnique();
 
         builder.Property(c => c.PhoneNumber)
-            .HasMaxLength(20);
+            .HasMaxLength(30);
 
         builder.Property(c => c.RowVersion)
             .IsRowVersion();

@@ -5,6 +5,7 @@ using Store.API.DTOs;
 using Store.Domain.Entities;
 using Store.Domain.Enums;
 using Store.Infrastructure.Presistence;
+using System.Net.NetworkInformation;
 using System.Transactions;
 
 namespace Store.API.Controllers;
@@ -19,7 +20,7 @@ public class OrderController : ControllerBase
         _db = db;
     }
 
-   
+
     //[HttpPost("{id}/Payments")]
     //public async Task<IActionResult> Payments([FromRoute] Guid Id,
     //                                          [FromBody] AddNewPaymentDTO paymentDTO)
@@ -68,11 +69,12 @@ public class OrderController : ControllerBase
     [HttpGet("summary")]
     public async Task<IActionResult> OrdersSummary()
     {
-        var summary= await _db.Orders.GroupBy( g=> g.Status).Select(g=> new {
+        var summary = await _db.Orders.GroupBy(g => g.Status).Select(g => new
+        {
             Status = g.Key.ToString(),
-            totalOrders=g.Count(),
-            TotalRevenue = g.Where(o=>o.IsPaid).Sum(o=>o.TotalAmount),
-            totalCountUnPaid=g.Count(o=>!o.IsPaid),
+            totalOrders = g.Count(),
+            TotalRevenue = g.Where(o => o.IsPaid).Sum(o => o.TotalAmount),
+            totalCountUnPaid = g.Count(o => !o.IsPaid),
         }).AsNoTracking().ToListAsync();
         return Ok(summary);
 
@@ -83,7 +85,7 @@ public class OrderController : ControllerBase
                                                 [FromBody] PaymentDto paymentDto)
     {
         //check if the referenced order exists
-        var order = await _db.Orders.Include(o=>o.Payments).FirstOrDefaultAsync(o=>o.Id==id);
+        var order = await _db.Orders.Include(o => o.Payments).FirstOrDefaultAsync(o => o.Id == id);
         if (order == null) return NotFound($"Order with id {id} not found.");
 
         //check for the order status which must be confirmed before making payment
@@ -100,13 +102,15 @@ public class OrderController : ControllerBase
         if (order.IsPaid)
             return BadRequest("The order is already fully paid.");
 
-       
+
         var remainingBalance = order.TotalAmount - totalPaid;
         //check if the payment amount exceeds the remaining balance
         if (paymentDto.Amount > remainingBalance)
-            return BadRequest(new { 
-                error=$"Payment amount exceeds the remaining balance.",
-                RemainingBalance = remainingBalance });
+            return BadRequest(new
+            {
+                error = $"Payment amount exceeds the remaining balance.",
+                RemainingBalance = remainingBalance
+            });
 
 
         var payment = new Payment
@@ -119,7 +123,7 @@ public class OrderController : ControllerBase
         };
 
         order.IsPaid = paymentDto.Amount + totalPaid >= order.TotalAmount;
-             
+
         await _db.Payments.AddAsync(payment);
 
         return Ok(new
@@ -127,7 +131,7 @@ public class OrderController : ControllerBase
             PaymentId = payment.Id,
             OrderId = payment.Order.Id,
             AmountPaid = payment.Amount,
-            RemainingBalance = order.TotalAmount- (paymentDto.Amount+totalPaid),
+            RemainingBalance = order.TotalAmount - (paymentDto.Amount + totalPaid),
             order.IsPaid,
         });
     }
@@ -141,12 +145,12 @@ public class OrderController : ControllerBase
     public async Task<IActionResult> GetOrderDetailsv1([FromRoute] Guid id)
     {
         // check if the referenced order exists
-        var order= await _db.Orders
-            .Include(o=>o.Customer)
-            .Include(o=>o.Items)
-            .ThenInclude(i=>i.Product)
-            .Include(o=>o.Payments)
-            .FirstOrDefaultAsync(o=>o.Id==id);
+        var order = await _db.Orders
+            .Include(o => o.Customer)
+            .Include(o => o.Items)
+            .ThenInclude(i => i.Product)
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.Id == id);
 
         if (order == null) return NotFound($"Order with id {id} not found.");
 
@@ -229,7 +233,7 @@ public class OrderController : ControllerBase
     [HttpGet("{id}/detailsV3")]
     public async Task<IActionResult> GetOrderDetails([FromRoute] Guid id)
     {
-      
+
         var order = await _db.Orders
             .Where(o => o.Id == id).
             Select(o => new
@@ -260,8 +264,98 @@ public class OrderController : ControllerBase
 
         // check if the referenced order exists
         if (order is null) return NotFound($"Order with id {id} not found.");
-        return Ok( order );
-         
+        return Ok(order);
+
     }
 
+
+    [HttpPost("{id}/confirm-with-stock")]
+    public async Task<IActionResult> ConfirmOrderWithStockCheck([FromRoute] Guid id)
+    {
+        // load order with its Items and the related products with their stock quantity in one query to avoid data inconsistency
+        var order = await _db.Orders.Include(o => o.Items).ThenInclude(i => i.Product)
+            .FirstOrDefaultAsync(o => o.Id == id);
+        //check for the order exsit 
+        if (order is null) return NotFound($"Order with id {id} not found.");
+
+        //check for order status which must be pending to be confirmed
+        if (order.Status != OrderStatus.Pending)
+            return BadRequest("Only pending orders can be confirmed.");
+
+        var insufficientProducts = new List<InsufficientProductsDto>();
+        // check for the order Items product stock sufficeincy 
+        foreach (var item in order.Items)
+        {
+            //Product.StockQuantity is the current stock quantity for the product in the database 
+            //item.Quantity is the quantity of the product in the order which we want to confirm
+            if (item.Product.StockQuantity < item.Quantity)
+                insufficientProducts.Add(new InsufficientProductsDto
+                {
+                    ProductId = item.ProductId,
+                    Reason = $"Insufficient stock for product {item.Product.Name}. Available: {item.Product.StockQuantity}, Required: {item.Quantity}"
+                });
+        }
+        if (insufficientProducts.Any())
+            return BadRequest(new { InsufficientProducts = insufficientProducts });
+
+        // after confirming the order we need to update the stock quantity for the products in the order items
+        //create a list of stockmovement records for the products in the order items to record the stock quantity movement for each product in the order items
+        var stockMovements= new List<StockMovement>();
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+        try
+        {
+            //there are three things very improtant to be in the same transaction to avoid data inconsistency issues
+            //first confirm the order by updating the order status to confirmed
+
+            order.Status = OrderStatus.Confirmed;
+            await _db.SaveChangesAsync();
+            //second update the stock quantity for the products in the order items 
+            //by dicreasing the stock quantity by the order item quantity for each product in the order items 
+            //so should traverse the order items and for each item product will decrease the stock quantity by the item quantity
+            foreach(var item in order.Items)
+            {
+                item.Product.StockQuantity= item.Product.StockQuantity-item.Quantity;
+            }
+            await _db.SaveChangesAsync();
+
+            await transaction.CreateSavepointAsync("StockReduced");
+            // make the StockMovement which is the record for the stock quantity movement for each product in the order items
+            stockMovements = order.Items.Select(i => new StockMovement
+            {
+                ProductId = i.ProductId,
+                OrderId = order.Id,
+                Order = order,
+                QuantityChange = -i.Quantity,
+                Reason = $"Order {order.OrderNumber}  Confirmed",
+                MovementData = DateTime.UtcNow,
+                Product = i.Product
+            }).ToList();
+            await _db.StockMovements.AddRangeAsync(stockMovements);
+            await _db.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+        catch (Exception ex)
+        {
+            await transaction.RollbackToSavepointAsync("StockReduced");
+            // by calling transaction.commitAsync() means commit the successful operation before the savePoint so we not lose the updating for both 
+            // order status and the stock quantity for the products in the order items but we just lose the creating for the stock movement records
+            // which is not critical as we have the data for the order and the products to create the stock movement records later if we want to do so
+            await transaction.CommitAsync();
+        }
+        return Ok(new
+        {
+            OrderId = order.Id,
+            order.OrderNumber,
+            Status = order.Status.ToString(),
+            ItemsProcessed = order.Items.Select(i => new {
+                ProductName = i.Product.Name,
+                i.Quantity,
+            }),
+            MovementRecordsCreated= stockMovements.Select(s => new {
+                s.Id,
+                s.QuantityChange,
+                s.Reason,
+            })
+        }); 
+    }
 }

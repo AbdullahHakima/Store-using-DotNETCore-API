@@ -12,8 +12,8 @@ using Store.Infrastructure.Presistence;
 namespace Store.Infrastructure.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20260317045326_AddIsPaidToOrder")]
-    partial class AddIsPaidToOrder
+    [Migration("20260321013136_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -101,8 +101,8 @@ namespace Store.Infrastructure.Migrations
                         .HasColumnType("nvarchar(150)");
 
                     b.Property<string>("PhoneNumber")
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
 
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
@@ -323,6 +323,53 @@ namespace Store.Infrastructure.Migrations
                     b.ToTable("Products", (string)null);
                 });
 
+            modelBuilder.Entity("Store.Domain.Entities.StockMovement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("MovementData")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("QuantityChange")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId");
+
+                    b.HasIndex("ProductId");
+
+                    b.ToTable("StockMovements", (string)null);
+                });
+
             modelBuilder.Entity("Store.Domain.Entities.Tag", b =>
                 {
                     b.Property<Guid>("Id")
@@ -465,6 +512,25 @@ namespace Store.Infrastructure.Migrations
                     b.Navigation("Category");
                 });
 
+            modelBuilder.Entity("Store.Domain.Entities.StockMovement", b =>
+                {
+                    b.HasOne("Store.Domain.Entities.Order", "Order")
+                        .WithMany("StockMovements")
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Store.Domain.Entities.Product", "Product")
+                        .WithMany("StockMovements")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Order");
+
+                    b.Navigation("Product");
+                });
+
             modelBuilder.Entity("Store.Domain.Entities.Category", b =>
                 {
                     b.Navigation("Products");
@@ -480,11 +546,15 @@ namespace Store.Infrastructure.Migrations
                     b.Navigation("Items");
 
                     b.Navigation("Payments");
+
+                    b.Navigation("StockMovements");
                 });
 
             modelBuilder.Entity("Store.Domain.Entities.Product", b =>
                 {
                     b.Navigation("OrderItems");
+
+                    b.Navigation("StockMovements");
                 });
 #pragma warning restore 612, 618
         }

@@ -17,6 +17,7 @@ public class ApplicationDbContext:DbContext
     public DbSet<OrderItem> OrderItems { get; set; }
     public DbSet<Payment> Payments { get; set; }
     public DbSet<Tag> Tags { get; set; }
+    public DbSet<StockMovement> StockMovements { get; set; }
     #endregion
 
     public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)

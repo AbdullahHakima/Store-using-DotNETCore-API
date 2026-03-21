@@ -1,10 +1,8 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Bogus;
+using Microsoft.EntityFrameworkCore;
 using Store.Domain.Entities;
 using Store.Domain.Enums;
 using Store.Domain.ValueObjects;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace Store.Infrastructure.Presistence
 {
@@ -12,134 +10,128 @@ namespace Store.Infrastructure.Presistence
     {
         public static async Task SeedAsync(ApplicationDbContext db)
         {
-            // If any categories exist, we already seeded — skip
-            if (await db.Categories.AnyAsync()) return;
+            if (await db.Products.CountAsync() >= 100) return;
+
+            var faker = new Faker { Locale = "en" };
 
             // ── Categories ───────────────────────────────────────────
-            var electronics = new Category
-            {
-                Name = "Electronics",
-                Description = "Phones, laptops, accessories"
-            };
-            var clothing = new Category
-            {
-                Name = "Clothing",
-                Description = "T-shirts, jackets, shoes"
-            };
-            var food = new Category
-            {
-                Name = "Food & Beverages",
-                Description = "Packaged food, drinks"
-            };
-
-            await db.Categories.AddRangeAsync(electronics, clothing, food);
+            var categories = new List<Category>
+        {
+            new() { Name = "Electronics",      Description = "Phones, laptops, accessories" },
+            new() { Name = "Clothing",         Description = "T-shirts, jackets, shoes" },
+            new() { Name = "Food & Beverages", Description = "Packaged food, drinks" },
+            new() { Name = "Home & Garden",    Description = "Furniture, tools, decor" },
+            new() { Name = "Sports",           Description = "Equipment, apparel, gear" },
+        };
+            await db.Categories.AddRangeAsync(categories);
 
             // ── Tags ─────────────────────────────────────────────────
-            var tagSale = new Tag { Name = "On Sale", Color = "#e74c3c" };
-            var tagNew = new Tag { Name = "New", Color = "#2ecc71" };
-            var tagPopular = new Tag { Name = "Popular", Color = "#f39c12" };
+            var tags = new List<Tag>
+        {
+            new() { Name = "On Sale",   Color = "#e74c3c" },
+            new() { Name = "New",       Color = "#2ecc71" },
+            new() { Name = "Popular",   Color = "#f39c12" },
+            new() { Name = "Limited",   Color = "#9b59b6" },
+            new() { Name = "Clearance", Color = "#1abc9c" },
+        };
+            await db.Tags.AddRangeAsync(tags);
 
-            await db.Tags.AddRangeAsync(tagSale, tagNew, tagPopular);
+            // ── Products — 1000 rows ──────────────────────────────────
+            var productFaker = new Faker<Product>()
+                .RuleFor(p => p.Name, f => f.Commerce.ProductName())
+                .RuleFor(p => p.Description, f => f.Commerce.ProductDescription())
+                .RuleFor(p => p.Price, f => Math.Round(f.Random.Decimal(5, 2000), 2))
+                .RuleFor(p => p.StockQuantity, f => f.Random.Int(0, 500))
+                .RuleFor(p => p.IsActive, f => f.Random.Bool(0.85f)) // 85% active
+                .RuleFor(p => p.Category, f => f.PickRandom(categories))
+                .RuleFor(p => p.Tags, f =>
+                {
+                    // 0–3 random tags per product
+                    var count = f.Random.Int(0, 3);
+                    return f.PickRandom(tags, count).ToList();
+                });
 
-            // ── Products ─────────────────────────────────────────────
-            var phone = new Product
-            {
-                Name = "Smartphone X12",
-                Description = "6.5 inch display, 128GB storage",
-                Price = 599.99m,
-                StockQuantity = 50,
-                Category = electronics,
-                Tags = [tagNew, tagPopular]
-            };
-            var laptop = new Product
-            {
-                Name = "Laptop Pro 15",
-                Description = "Intel i7, 16GB RAM, 512GB SSD",
-                Price = 1199.99m,
-                StockQuantity = 20,
-                Category = electronics,
-                Tags = [tagPopular]
-            };
-            var shirt = new Product
-            {
-                Name = "Cotton T-Shirt",
-                Price = 19.99m,
-                StockQuantity = 200,
-                Category = clothing,
-                Tags = [tagSale]
-            };
-            var coffee = new Product
-            {
-                Name = "Ground Coffee 500g",
-                Price = 12.50m,
-                StockQuantity = 150,
-                Category = food,
-                Tags = [tagNew]
-            };
+            var products = productFaker.Generate(1000);
+            await db.Products.AddRangeAsync(products);
 
-            await db.Products.AddRangeAsync(phone, laptop, shirt, coffee);
+            // ── Customers — 50 rows ───────────────────────────────────
+            var customerFaker = new Faker<Customer>()
+                .RuleFor(c => c.Name, f => f.Name.FullName())
+                .RuleFor(c => c.Email, f => f.Internet.Email())
+                .RuleFor(c => c.PhoneNumber, f => f.Phone.PhoneNumber())
+                .RuleFor(c => c.Address, f => new Address(
+                    f.Address.StreetAddress(),
+                    f.Address.City(),
+                    f.Address.Country()));
 
-            // ── Customers ────────────────────────────────────────────
-            var ahmed = new Customer
-            {
-                Name = "Ahmed Hassan",
-                Email = "ahmed@example.com",
-                PhoneNumber = "+20-100-000-0001",
-                Address = new Address("10 Tahrir St", "Cairo", "Egypt")
-            };
-            var sara = new Customer
-            {
-                Name = "Sara Khalil",
-                Email = "sara@example.com",
-                PhoneNumber = "+20-100-000-0002",
-                Address = new Address("5 Corniche Rd", "Alexandria", "Egypt")
-            };
+            var customers = customerFaker.Generate(50);
+            await db.Customers.AddRangeAsync(customers);
 
-            await db.Customers.AddRangeAsync(ahmed, sara);
-
-            // ── Orders ───────────────────────────────────────────────
-            // Notice we use order.AddItem() — not order.Items.Add()
-            // This is the aggregate pattern: the root controls its children
-            var order1 = new Order
-            {
-                OrderNumber = "ORD-0001",
-                OrderDate = DateTime.UtcNow.AddDays(-5),
-                Customer = ahmed,
-                Items = [],
-                Payments = []
-            };
-            order1.AddOrderItem(phone, quantity: 1);
-            order1.AddOrderItem(coffee, quantity: 2);
-            order1.ConfirmOrder();
-
-            var order2 = new Order
-            {
-                OrderNumber = "ORD-0002",
-                OrderDate = DateTime.UtcNow.AddDays(-2),
-                Customer = sara,
-                Items = [],
-                Payments = []
-            };
-            order2.AddOrderItem(shirt, quantity: 3);
-            order2.AddOrderItem(laptop, quantity: 1);
-
-            await db.Orders.AddRangeAsync(order1, order2);
-
-            // ── Payments ─────────────────────────────────────────────
-            var payment1 = new Payment
-            {
-                Order = order1,
-                Amount = order1.TotalAmount,
-                Method = PaymentMethod.Card,
-                PaidAt = DateTime.UtcNow.AddDays(-5),
-                RefrenceCode = "TXN-ABC123"
-            };
-
-            await db.Payments.AddAsync(payment1);
-
-            // One SaveChangesAsync — everything above is tracked in memory
-            // EF inserts them all in one transaction in the correct order
+            // Save everything before creating orders
+            // (orders need real product and customer Ids)
             await db.SaveChangesAsync();
+
+            // Reload so we have real Ids
+            var savedProducts = await db.Products.Where(p => p.IsActive && p.StockQuantity > 0).ToListAsync();
+            var savedCustomers = await db.Customers.ToListAsync();
+
+            // ── Orders — 200 rows ─────────────────────────────────────
+            var orders = new List<Order>();
+
+            for (int i = 0; i < 200; i++)
+            {
+                var customer = faker.PickRandom(savedCustomers);
+                var status = faker.PickRandom<OrderStatus>();
+                var orderDate = faker.Date.Past(1);
+
+                var order = new Order
+                {
+                    OrderNumber = $"ORD-{(i + 1):D4}",
+                    OrderDate = orderDate,
+                    CustomerId = customer.Id,
+                    Status = status,
+                    Items = [],
+                    Payments = []
+                };
+
+                // 1–5 items per order
+                var itemCount = faker.Random.Int(1, 5);
+                var pickedProducts = faker.PickRandom(savedProducts, itemCount).ToList();
+
+                foreach (var product in pickedProducts)
+                {
+                    var qty = faker.Random.Int(1, 3);
+                    order.AddOrderItem(product, qty);
+                }
+
+                // Paid orders get a payment
+                if (status == OrderStatus.Confirmed ||
+                    status == OrderStatus.Shipped ||
+                    status == OrderStatus.Delivered)
+                {
+                    order.IsPaid = faker.Random.Bool(0.7f);
+
+                    if (order.IsPaid)
+                    {
+                        order.Payments.Add(new Payment
+                        {
+                            Amount = order.TotalAmount,
+                            Method = faker.PickRandom<PaymentMethod>(),
+                            PaidAt = orderDate.AddDays(faker.Random.Int(0, 3)),
+                            RefrenceCode = faker.Finance.CreditCardNumber()
+                        });
+                    }
+                }
+
+                orders.Add(order);
+            }
+
+            await db.Orders.AddRangeAsync(orders);
+            await db.SaveChangesAsync();
+
+            Console.WriteLine($"[Seeder] Done — {products.Count} products, " +
+                              $"{customers.Count} customers, {orders.Count} orders.");
         }
     }
+
 }

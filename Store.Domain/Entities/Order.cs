@@ -17,6 +17,7 @@ public class Order: BaseEntity
     public Customer Customer { get; set; } = null!;
     public virtual ICollection<OrderItem> Items { get; set; } = [];    
     public virtual ICollection<Payment> Payments { get; set; } = [];
+    public virtual ICollection<StockMovement> StockMovements { get; set; } = [];
 
     public void AddOrderItem(Product product,int quantity)
     {
