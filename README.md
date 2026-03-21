@@ -949,6 +949,124 @@ Always use `await using var transaction = ...` not `using (var transaction = ...
  
  ---
  
+### Task 10 — Explicit Transactions with Savepoints
+ 
+**Level:** Transactions
+**Endpoint:** `POST /api/orders/{id}/confirm-with-stock`
+ 
+**Requirements:**
+1. Load order with items and products in one query
+2. Validate: order must be Pending, all products must have sufficient stock — before opening any transaction
+3. Inside one transaction: confirm order → reduce stock → create StockMovement audit records
+4. Place a savepoint named `"StockReduced"` after stock reduction
+5. If movement record creation fails, roll back to savepoint and commit — preserving the critical operations
+6. Return order info, items processed, and movement records created
+ 
+**Key concepts practiced:**
+- `await using var tx = await _db.Database.BeginTransactionAsync()` — async disposal
+- Three `SaveChangesAsync()` calls inside one transaction — all atomic until `CommitAsync()`
+- `CreateSavepointAsync("name")` — named checkpoint inside a live transaction
+- `RollbackToSavepointAsync("name")` — rewinds to checkpoint, transaction stays alive
+- After `RollbackToSavepoint`, call `CommitAsync()` to keep the work before the checkpoint
+- Validation always runs before opening the transaction — never open a transaction to validate
+- No `Update()` calls needed — change tracker detects modifications on loaded entities
+- `stockMovements` declared before `try` so it is accessible in the response outside the block
+ 
+**The savepoint decision:**
+The savepoint sits between stock reduction (critical) and movement record creation (audit trail). If the audit trail fails, the business-critical operations — order confirmed, stock reduced — are preserved by rolling back to the savepoint and committing. The audit trail failure is acceptable and recoverable. Losing the order confirmation is not.
+ 
+**Final submitted solution:**
+```csharp
+[HttpPost("{id}/confirm-with-stock")]
+public async Task<IActionResult> ConfirmOrderWithStockCheck([FromRoute] Guid id)
+{
+    var order = await _db.Orders
+        .Include(o => o.Items)
+            .ThenInclude(i => i.Product)
+        .FirstOrDefaultAsync(o => o.Id == id);
+ 
+    if (order is null) return NotFound($"Order with id {id} not found.");
+    if (order.Status != OrderStatus.Pending)
+        return BadRequest("Only pending orders can be confirmed.");
+ 
+    var insufficientProducts = new List<InsufficientProductsDto>();
+    foreach (var item in order.Items)
+    {
+        if (item.Product.StockQuantity < item.Quantity)
+            insufficientProducts.Add(new InsufficientProductsDto
+            {
+                ProductId = item.ProductId,
+                Reason    = $"Insufficient stock for {item.Product.Name}. " +
+                            $"Available: {item.Product.StockQuantity}, Required: {item.Quantity}"
+            });
+    }
+    if (insufficientProducts.Any())
+        return BadRequest(new { InsufficientProducts = insufficientProducts });
+ 
+    var stockMovements = new List<StockMovement>();
+    await using var transaction = await _db.Database.BeginTransactionAsync();
+    try
+    {
+        // Step 1 — confirm the order
+        order.Status = OrderStatus.Confirmed;
+        await _db.SaveChangesAsync();
+ 
+        // Step 2 — reduce stock
+        foreach (var item in order.Items)
+            item.Product.StockQuantity -= item.Quantity;
+        await _db.SaveChangesAsync();
+ 
+        // Savepoint — order confirmed + stock reduced are safe beyond this point
+        await transaction.CreateSavepointAsync("StockReduced");
+ 
+        // Step 3 — create audit records
+        stockMovements = order.Items.Select(i => new StockMovement
+        {
+            ProductId      = i.ProductId,
+            OrderId        = order.Id,
+            Order          = order,
+            QuantityChange = -i.Quantity,
+            Reason         = $"Order {order.OrderNumber} confirmed",
+            MovementDate   = DateTime.UtcNow,
+            Product        = i.Product
+        }).ToList();
+ 
+        await _db.StockMovements.AddRangeAsync(stockMovements);
+        await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
+    }
+    catch (Exception)
+    {
+        // Roll back to savepoint — order confirmed + stock reduced preserved
+        // Only audit records lost — acceptable, can be recreated later
+        await transaction.RollbackToSavepointAsync("StockReduced");
+        await transaction.CommitAsync();
+    }
+ 
+    return Ok(new
+    {
+        OrderId                = order.Id,
+        order.OrderNumber,
+        Status                 = order.Status.ToString(),
+        ItemsProcessed         = order.Items.Select(i => new
+        {
+            ProductName = i.Product.Name,
+            i.Quantity
+        }),
+        MovementRecordsCreated = stockMovements.Select(s => new
+        {
+            s.Id,
+            s.QuantityChange,
+            s.Reason
+        })
+    });
+}
+```
+ 
+**Score:** 7.3 first attempt → 9.3 final
+ 
+---
+ 
 ## Patterns Learned
  
 | Pattern | Description |
@@ -976,6 +1094,161 @@ Always use `await using var transaction = ...` not `using (var transaction = ...
 | SQL formula expressions | Column reference in lambda → SQL arithmetic. Pre-computed C# value → per-row UPDATEs |
 | IgnoreQueryFilters for bulk ops | Prevents EF adding a SELECT before UPDATE/DELETE when global filters are active |
 | await using for transactions | Always `await using var tx = ...` not `using ()` — ensures DisposeAsync is awaited |
+| Savepoints | `CreateSavepointAsync` + `RollbackToSavepointAsync` + `CommitAsync` — partial rollback without losing critical work |
+| Validation before transaction | Never open a transaction to validate — validate first, open only when ready to write |
+| Change tracker on loaded entities | No `Update()` needed — modifying a loaded entity is detected automatically |
+
+---
+ 
+## Concept Deep Dive — Expression Trees
+ 
+> Added as a reference after a question about how EF translates `Where((expr1) && (expr2))` into SQL.
+ 
+---
+ 
+### The core question
+ 
+*"When I use `Where(expression1 && expression2)` does EF translate it into two separate expression trees?"*
+ 
+**Answer:** No — it is one tree. The `&&` operator becomes a single `BinaryExpression` node of type `AndAlso` with two child nodes. One tree produces one SQL `WHERE` clause with one `AND`.
+ 
+---
+ 
+### Func vs Expression — the foundation
+ 
+These two lines look identical. They are not:
+ 
+```csharp
+// Func — a compiled delegate (machine code)
+Func<Product, bool> fn = p => p.Price > 100;
+// EF CANNOT translate this — it is compiled code, not inspectable data
+ 
+// Expression — a data structure describing the lambda
+Expression<Func<Product, bool>> ex = p => p.Price > 100;
+// EF CAN translate this — it is an object graph EF can walk and convert to SQL
+```
+ 
+A **delegate** is a pointer to compiled IL — you run it but cannot inspect its structure. An **expression** is an object graph that describes what the code would do — EF walks it and translates each node to SQL.
+ 
+---
+ 
+### What a tree actually looks like in memory
+ 
+For `p => p.Price > 100` the compiler builds:
+ 
+```
+LambdaExpression
+├── Parameters: [ p (ParameterExpression, type: Product) ]
+└── Body: BinaryExpression (NodeType: GreaterThan)
+    ├── Left:  MemberExpression
+    │          ├── Expression: p (ParameterExpression)
+    │          └── Member: Price (PropertyInfo)
+    └── Right: ConstantExpression
+               └── Value: 100 (decimal)
+```
+ 
+Every node is a real C# object. EF walks it: `MemberExpression(Price)` → column name `Price`. `BinaryExpression(GreaterThan)` → SQL operator `>`. `ConstantExpression(100)` → SQL parameter `@p = 100`.
+ 
+---
+ 
+### What && looks like in the tree
+ 
+For `.Where(p => p.CategoryId == categoryId && p.IsActive)`:
+ 
+```
+LambdaExpression
+└── Body: BinaryExpression (NodeType: AndAlso)   ← this is the &&
+    ├── Left:  BinaryExpression (NodeType: Equal)
+    │          ├── Left:  MemberExpression → CategoryId
+    │          └── Right: ConstantExpression → @categoryId
+    └── Right: MemberExpression → IsActive
+```
+ 
+EF translates this to: `WHERE CategoryId = @p AND IsActive = CAST(1 AS bit)`
+ 
+---
+ 
+### Chained Where() calls
+ 
+```csharp
+_db.Products
+    .Where(p => p.IsActive)
+    .Where(p => p.Price > 100)
+```
+ 
+These are NOT two trees. Each `Where()` adds its expression as an additional AND clause. EF collapses them at execution time:
+ 
+```sql
+WHERE [p].[IsDeleted] = 0   -- global query filter
+  AND [p].[IsActive] = 1    -- first Where()
+  AND [p].[Price] > @p      -- second Where()
+```
+ 
+---
+ 
+### Captured variables — why discount worked in Task 09
+ 
+```csharp
+decimal discount = percentage / 100;  // = 0.9 for 10% off
+.SetProperty(p => p.Price, p => p.Price * (1 - discount))
+```
+ 
+The captured variable `discount` is stored as a field on a compiler-generated closure. EF sees `MemberExpression → closure.discount` and evaluates it immediately as a constant. The tree becomes:
+ 
+```
+BinaryExpression (Multiply)
+├── Left:  MemberExpression → Price    ← column reference, stays in SQL
+└── Right: BinaryExpression (Subtract)
+           ├── ConstantExpression → 1
+           └── ConstantExpression → 0.9  ← closure evaluated to constant
+```
+ 
+Result: `[Price] * @p` — one SQL formula, one bulk UPDATE.
+ 
+When you pre-compute the value in C# first (`decimal newPrice = product.Price * 0.9`), EF sees a `ConstantExpression(119.99)` — a fixed number different per row — and generates one UPDATE per row instead.
+ 
+---
+ 
+### Why Func breaks EF
+ 
+```csharp
+// WRONG — Func variable, EF throws at runtime
+Func<Product, bool> filter = p => p.Price > 100;
+_db.Products.Where(filter);  // "The LINQ expression could not be translated"
+ 
+// CORRECT — Expression variable, EF translates to SQL
+Expression<Func<Product, bool>> filter = p => p.Price > 100;
+_db.Products.Where(filter);  // WHERE Price > @p
+```
+ 
+When you write a lambda inline in `.Where(p => ...)`, the compiler automatically creates an `Expression<Func<>>` because `IQueryable.Where()` takes an `Expression` parameter. The problem only appears when you store the lambda in a `Func` variable first.
+ 
+---
+ 
+### EF translation pipeline — what happens between your C# and the database
+ 
+| Step | What happens |
+|---|---|
+| 1 | You write LINQ — `_db.Products.Where(...).Select(...)` |
+| 2 | C# compiler builds expression trees for each lambda |
+| 3 | `IQueryable` holds a chain of `MethodCallExpression` nodes — nothing hits the DB |
+| 4 | `ToListAsync()` called — execution triggered |
+| 5 | EF visitor walks the tree — maps members to columns, operators to SQL, closures to parameters |
+| 6 | SQL string assembled with parameter placeholders |
+| 7 | Query hashed and stored in query cache |
+| 8 | SQL sent to database, results mapped back to your type |
+ 
+A **compiled query** (`EF.CompileAsyncQuery`) caches the result of steps 5–6 as a delegate. Every subsequent call skips those steps entirely and jumps straight to step 7.
+ 
+---
+ 
+### Quick error reference
+ 
+| Error | Cause | Fix |
+|---|---|---|
+| `The LINQ expression could not be translated` | Lambda uses a `Func` variable or a C# method EF does not know | Change `Func<T,bool>` to `Expression<Func<T,bool>>` or rewrite using supported operators |
+| Bulk UPDATE generates per-row UPDATEs | Pre-computed value passed instead of column expression | Reference the column inside the lambda: `p => p.Price * factor` not `newPrice` |
+| Query loads all rows then filters | `Func` variable in `Where()`, or method call EF cannot translate | Inline the lambda or use an `Expression` variable |
  
 ---
  
@@ -993,6 +1266,9 @@ Always use `await using var transaction = ...` not `using (var transaction = ...
 | Task 07 — Projection | 10/10 | 10/10 |
 | Task 08 — Compiled Queries | 9.3/10 | 9.3/10 |
 | Task 09 — Bulk Operations | 7.0 | 8.7 |
+| Task 10 — Transactions | 7.3 | 9.3 |
  
  
-First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0 → 9.3 → 7.0**
+First attempt scores: **3.7 → 4.7 → 6.3 → 7.0 → 7.0 → 7.0 → 9.0 → 10.0 → 9.3 → 7.0 → 7.3**
+ 
+Ten tasks completed across two levels — business logic patterns (Tasks 01–05) and EF Core performance and internals (Tasks 06–10). Starting score trend went from 3.7 to consistently 7+ across all new tasks.
