@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="Store.API/Store.API.csproj" />
+  <Project Path="Store.Application/Store.Application.csproj" Id="0c72e00e-1009-4494-b779-63feab8040c9" />
   <Project Path="Store.Domain/Store.Domain.csproj" />
   <Project Path="Store.Infrastructure/Store.Infrastructure.csproj" />
 </Solution>
