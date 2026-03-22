@@ -15,7 +15,7 @@ public static class ResultExtension
         return result.StatusCode switch
         {
             404 => controller.NotFound(new { error = result.Error }),
-            400 => controller.BadRequest(new { error = result.Error }),
+            400 => controller.BadRequest(new { error = result.Error,value=result.Value }),
             409 => controller.Conflict(new { error=result.Error}),
             _ => controller.StatusCode(500,new {error=result.Error})
         };

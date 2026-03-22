@@ -22,6 +22,7 @@ public class Result<T>
     public static Result<T> Success(T value) => new(true, value, string.Empty, 200);
     public static Result<T> NotFound(string error) => new(false, default, error, 404);
     public static Result<T> BadRequest(string error) => new(false, default, error, 400);
+    public static Result<T> BadRequest(string error,T value) => new(false, value, error, 400);
     public static Result<T> ServerError(string error) => new(false, default, error, 500);
     public static Result<T> Conflict(string error) => new(false, default, error, 409);
 }

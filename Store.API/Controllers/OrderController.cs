@@ -2,6 +2,11 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Store.API.DTOs;
+using Store.API.Extenssions;
+using Store.Application.Common;
+using Store.Application.DTOs.Orders.Requests;
+using Store.Application.DTOs.Orders.Responses;
+using Store.Application.Interfaces;
 using Store.Domain.Entities;
 using Store.Domain.Enums;
 using Store.Infrastructure.Presistence;
@@ -15,11 +20,21 @@ namespace Store.API.Controllers;
 public class OrderController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
-    public OrderController(ApplicationDbContext db)
+    private readonly IOrderService orderService;
+    public OrderController(ApplicationDbContext db,IOrderService orderService)
     {
         _db = db;
+        this.orderService = orderService;
     }
 
+
+
+    [HttpPost("/Create")]
+    public async Task<IActionResult> CreateOrder([FromBody] OrderCreateRequest request)
+    {
+        var result = await orderService.CreateAsync(request);
+        return result.ToActionResult(this);
+    }
 
     //[HttpPost("{id}/Payments")]
     //public async Task<IActionResult> Payments([FromRoute] Guid Id,
@@ -267,96 +282,110 @@ public class OrderController : ControllerBase
         return Ok(order);
 
     }
+    [HttpGet("{id}/Get-By-Id/using-application-layer")]
+    public async Task<IActionResult> GetById([FromRoute] Guid id)
+    {
+        var result = await orderService.GetByIdAsync(id);
+        return result.ToActionResult(this);
+    }
 
 
     [HttpPost("{id}/confirm-with-stock")]
-    public async Task<IActionResult> ConfirmOrderWithStockCheck([FromRoute] Guid id)
+    public async Task<IActionResult> ConfirmWithStock([FromRoute] Guid id)
     {
-        // load order with its Items and the related products with their stock quantity in one query to avoid data inconsistency
-        var order = await _db.Orders.Include(o => o.Items).ThenInclude(i => i.Product)
-            .FirstOrDefaultAsync(o => o.Id == id);
-        //check for the order exsit 
-        if (order is null) return NotFound($"Order with id {id} not found.");
-
-        //check for order status which must be pending to be confirmed
-        if (order.Status != OrderStatus.Pending)
-            return BadRequest("Only pending orders can be confirmed.");
-
-        var insufficientProducts = new List<InsufficientProductsDto>();
-        // check for the order Items product stock sufficeincy 
-        foreach (var item in order.Items)
-        {
-            //Product.StockQuantity is the current stock quantity for the product in the database 
-            //item.Quantity is the quantity of the product in the order which we want to confirm
-            if (item.Product.StockQuantity < item.Quantity)
-                insufficientProducts.Add(new InsufficientProductsDto
-                {
-                    ProductId = item.ProductId,
-                    Reason = $"Insufficient stock for product {item.Product.Name}. Available: {item.Product.StockQuantity}, Required: {item.Quantity}"
-                });
-        }
-        if (insufficientProducts.Any())
-            return BadRequest(new { InsufficientProducts = insufficientProducts });
-
-        // after confirming the order we need to update the stock quantity for the products in the order items
-        //create a list of stockmovement records for the products in the order items to record the stock quantity movement for each product in the order items
-        var stockMovements= new List<StockMovement>();
-        await using var transaction = await _db.Database.BeginTransactionAsync();
-        try
-        {
-            //there are three things very improtant to be in the same transaction to avoid data inconsistency issues
-            //first confirm the order by updating the order status to confirmed
-
-            order.Status = OrderStatus.Confirmed;
-            await _db.SaveChangesAsync();
-            //second update the stock quantity for the products in the order items 
-            //by dicreasing the stock quantity by the order item quantity for each product in the order items 
-            //so should traverse the order items and for each item product will decrease the stock quantity by the item quantity
-            foreach(var item in order.Items)
-            {
-                item.Product.StockQuantity= item.Product.StockQuantity-item.Quantity;
-            }
-            await _db.SaveChangesAsync();
-
-            await transaction.CreateSavepointAsync("StockReduced");
-            // make the StockMovement which is the record for the stock quantity movement for each product in the order items
-            stockMovements = order.Items.Select(i => new StockMovement
-            {
-                ProductId = i.ProductId,
-                OrderId = order.Id,
-                Order = order,
-                QuantityChange = -i.Quantity,
-                Reason = $"Order {order.OrderNumber}  Confirmed",
-                MovementData = DateTime.UtcNow,
-                Product = i.Product
-            }).ToList();
-            await _db.StockMovements.AddRangeAsync(stockMovements);
-            await _db.SaveChangesAsync();
-            await transaction.CommitAsync();
-        }
-        catch (Exception ex)
-        {
-            await transaction.RollbackToSavepointAsync("StockReduced");
-            // by calling transaction.commitAsync() means commit the successful operation before the savePoint so we not lose the updating for both 
-            // order status and the stock quantity for the products in the order items but we just lose the creating for the stock movement records
-            // which is not critical as we have the data for the order and the products to create the stock movement records later if we want to do so
-            await transaction.CommitAsync();
-        }
-        return Ok(new
-        {
-            OrderId = order.Id,
-            order.OrderNumber,
-            Status = order.Status.ToString(),
-            ItemsProcessed = order.Items.Select(i => new {
-                ProductName = i.Product.Name,
-                i.Quantity,
-            }),
-            MovementRecordsCreated= stockMovements.Select(s => new {
-                s.Id,
-                s.QuantityChange,
-                s.Reason,
-            })
-        }); 
+        var result = await orderService.ConfirmWithStockAsync(id);
+        return result.ToActionResult(this);
     }
+
+
+    //[HttpPost("{id}/confirm-with-stock")]
+    //public async Task<IActionResult> ConfirmOrderWithStockCheck([FromRoute] Guid id)
+    //{
+    //    // load order with its Items and the related products with their stock quantity in one query to avoid data inconsistency
+    //    var order = await _db.Orders.Include(o => o.Items).ThenInclude(i => i.Product)
+    //        .FirstOrDefaultAsync(o => o.Id == id);
+    //    //check for the order exsit 
+    //    if (order is null) return NotFound($"Order with id {id} not found.");
+
+    //    //check for order status which must be pending to be confirmed
+    //    if (order.Status != OrderStatus.Pending)
+    //        return BadRequest("Only pending orders can be confirmed.");
+
+    //    var insufficientProducts = new List<InsufficientProductsDto>();
+    //    // check for the order Items product stock sufficeincy 
+    //    foreach (var item in order.Items)
+    //    {
+    //        //Product.StockQuantity is the current stock quantity for the product in the database 
+    //        //item.Quantity is the quantity of the product in the order which we want to confirm
+    //        if (item.Product.StockQuantity < item.Quantity)
+    //            insufficientProducts.Add(new InsufficientProductsDto
+    //            {
+    //                ProductId = item.ProductId,
+    //                Reason = $"Insufficient stock for product {item.Product.Name}. Available: {item.Product.StockQuantity}, Required: {item.Quantity}"
+    //            });
+    //    }
+    //    if (insufficientProducts.Any())
+    //        return BadRequest(new { InsufficientProducts = insufficientProducts });
+
+    //    // after confirming the order we need to update the stock quantity for the products in the order items
+    //    //create a list of stockmovement records for the products in the order items to record the stock quantity movement for each product in the order items
+    //    var stockMovements= new List<StockMovement>();
+    //    await using var transaction = await _db.Database.BeginTransactionAsync();
+    //    try
+    //    {
+    //        //there are three things very improtant to be in the same transaction to avoid data inconsistency issues
+    //        //first confirm the order by updating the order status to confirmed
+
+    //        order.Status = OrderStatus.Confirmed;
+    //        await _db.SaveChangesAsync();
+    //        //second update the stock quantity for the products in the order items 
+    //        //by dicreasing the stock quantity by the order item quantity for each product in the order items 
+    //        //so should traverse the order items and for each item product will decrease the stock quantity by the item quantity
+    //        foreach(var item in order.Items)
+    //        {
+    //            item.Product.StockQuantity= item.Product.StockQuantity-item.Quantity;
+    //        }
+    //        await _db.SaveChangesAsync();
+
+    //        await transaction.CreateSavepointAsync("StockReduced");
+    //        // make the StockMovement which is the record for the stock quantity movement for each product in the order items
+    //        stockMovements = order.Items.Select(i => new StockMovement
+    //        {
+    //            ProductId = i.ProductId,
+    //            OrderId = order.Id,
+    //            Order = order,
+    //            QuantityChange = -i.Quantity,
+    //            Reason = $"Order {order.OrderNumber}  Confirmed",
+    //            MovementData = DateTime.UtcNow,
+    //            Product = i.Product
+    //        }).ToList();
+    //        await _db.StockMovements.AddRangeAsync(stockMovements);
+    //        await _db.SaveChangesAsync();
+    //        await transaction.CommitAsync();
+    //    }
+    //    catch (Exception ex)
+    //    {
+    //        await transaction.RollbackToSavepointAsync("StockReduced");
+    //        // by calling transaction.commitAsync() means commit the successful operation before the savePoint so we not lose the updating for both 
+    //        // order status and the stock quantity for the products in the order items but we just lose the creating for the stock movement records
+    //        // which is not critical as we have the data for the order and the products to create the stock movement records later if we want to do so
+    //        await transaction.CommitAsync();
+    //    }
+    //    return Ok(new
+    //    {
+    //        OrderId = order.Id,
+    //        order.OrderNumber,
+    //        Status = order.Status.ToString(),
+    //        ItemsProcessed = order.Items.Select(i => new {
+    //            ProductName = i.Product.Name,
+    //            i.Quantity,
+    //        }),
+    //        MovementRecordsCreated= stockMovements.Select(s => new {
+    //            s.Id,
+    //            s.QuantityChange,
+    //            s.Reason,
+    //        })
+    //    }); 
+    //}
     
 }
