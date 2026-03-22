@@ -56,9 +56,10 @@ namespace Store.API
                 app.UseSwaggerUI();
             }
 
-            app.UseAuthorization();
             // set the exception handler as first on the middleware pipline 
             app.UseMiddleware<ExceptionHandlingMiddleware>();
+
+            app.UseAuthorization();
 
             app.MapControllers();
             using (var scope = app.Services.CreateScope())
