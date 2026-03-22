@@ -1484,3 +1484,56 @@ public class ProductsController : ControllerBase
 ```
  
 ---
+ 
+ 
+---
+ 
+### Task A3 — IOrderService extraction
+ 
+**What changed:** All order logic — create, get by id, confirm with stock — moved from `OrdersController` into `OrderService` in `Store.Infrastructure/Services/`. The controller went from ~150 lines to ~15 lines.
+ 
+**Key lessons:**
+ 
+**N+1 in service methods is still N+1.** Moving logic from a controller to a service does not fix a query problem. The batch load pattern must follow the logic wherever it goes — load all products with one `Contains()` query before the loop, look up in memory inside the loop.
+ 
+**Services return `Result<T>`, not `IActionResult`.** The service has no knowledge of HTTP. It returns `Result.NotFound(...)`, `Result.BadRequest(...)`, `Result.Success(...)`. The controller maps it to HTTP with one call to `ToActionResult(this)`.
+ 
+**Transactions belong in the service, not the controller.** The full Task 10 transaction — three SaveChanges, savepoint, catch-rollback-commit — moved into `ConfirmWithStockAsync` unchanged. The controller never knew about it and still does not.
+ 
+**Partial failures need structured responses.** `BadRequest` was overloaded to carry a value alongside the error string — `Result<T>.BadRequest(string error, T value)` — so insufficient product details travel back to the caller as structured data, not a message string.
+ 
+**`IsMovementCreated` flag on the response.** When the catch fires (movement records fail), the transaction commits the order confirmation and stock reduction but skips the audit trail. The response carries `IsMovementCreated = moves.Any()` so the caller knows whether audit records were written without having to query again.
+ 
+**Guard clause order matters.** Zero stock must be checked before insufficient stock — zero is a subset of insufficient, so checking insufficient first makes the zero case unreachable.
+ 
+**Common mistakes caught:**
+- `order.StockMovements.Any()` — navigation never loaded, always false. Use `moves.Any()` — the local list.
+- `OrderByDescending(o => o.Id)` for order number — Guid ordering is not sequential. Use `CountAsync() + 1`.
+- Customer existence not validated — FK violation at SaveChanges becomes a 500 instead of a clean 404.
+- `if (product is not null &&` inside a block that already checked for null — redundant guard after `continue`.
+ 
+**Final controller shape:**
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+public class OrdersController : ControllerBase
+{
+    private readonly IOrderService _orderService;
+    public OrdersController(IOrderService orderService)
+        => _orderService = orderService;
+ 
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] OrderCreateRequest request)
+        => (await _orderService.CreateAsync(request)).ToActionResult(this);
+ 
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetById([FromRoute] Guid id)
+        => (await _orderService.GetByIdAsync(id)).ToActionResult(this);
+ 
+    [HttpPost("{id}/confirm-with-stock")]
+    public async Task<IActionResult> ConfirmWithStock([FromRoute] Guid id)
+        => (await _orderService.ConfirmWithStockAsync(id)).ToActionResult(this);
+}
+```
+ 
+**Score:** 7/10 first attempt → 9.3/10 final
