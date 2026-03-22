@@ -24,7 +24,9 @@ namespace Store.API
             // Register the AuditInterceptor as a scoped service, which means a new instance will be created for each HTTP request.
             builder.Services.AddScoped<AuditInterceptor>();
 
-            builder.Services.AddInfracstructure();
+            //inject both Application and infrastructure layers 
+            builder.Services.AddInfracstructure().AddApplication();
+
 
             // Configure the database context to use SQL Server with the connection string from appsettings.json
             // The MigrationsAssembly option specifies the assembly where the EF Core migrations are located, which is "Store.Infrastructure" in this case.

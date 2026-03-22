@@ -36,8 +36,8 @@ public class ProductService : IProductService
 
     public async Task<Result<ProductSearchResponse>> SearchAsync(ProductSearchRequest searchRequest)
     {
-        // to avoid make the user able to load all available products of the query as default or applying filters 
-        searchRequest.PageSize = Math.Clamp(searchRequest.PageSize, 1, 50);
+        //// to avoid make the user able to load all available products of the query as default or applying filters 
+        //searchRequest.PageSize = Math.Clamp(searchRequest.PageSize, 1, 50);
         
         // check for the prodcuts using the searchRequest model
 

@@ -149,8 +149,8 @@ public class OrderService : IOrderService
         if (customer is null) return Result<OrderCreateResponse>.NotFound($"Customer {request.CustomerId} not found.");
 
 
-        //check for vaild orderItems from the request
-        if (!request.Items.Any()) return Result<OrderCreateResponse>.BadRequest("there is no items to make the order!");
+        ////check for vaild orderItems from the request
+        //if (!request.Items.Any()) return Result<OrderCreateResponse>.BadRequest("there is no items to make the order!");
         var Items = new List<OrderItem>();
         var failuers = new List<OrderItemsFailuer>();
         var orderItems = new List<OrderItemsSuccess>();
