@@ -1625,3 +1625,113 @@ public static IServiceCollection AddApplication(this IServiceCollection services
 - Leaving manual `if (!request.Items.Any())` in the service after adding FluentValidation — redundant and confusing
  
 **Score:** 9.3/10 first attempt
+
+---
+ 
+### Task A5 — Global Exception Handling Middleware
+ 
+**What changed:** All unhandled exceptions now flow to one place. No try/catch needed in controllers or services for unexpected failures. Every unhandled exception produces a consistent JSON error response.
+ 
+**Key concepts:**
+ 
+Middleware in ASP.NET Core is a chain of nested calls. Each middleware calls `await _next(context)` which executes everything that comes after it. Registering exception middleware first means its `try` block wraps the entire remaining pipeline — routing, authentication, authorization, controllers, all other middleware. Any exception thrown anywhere downstream bubbles back through `_next` and is caught here. Registering it last would only wrap the controllers.
+ 
+`OperationCanceledException` is thrown when a client disconnects before the request completes. It is not a server error — the client chose to cancel. It must be handled separately: return 499 (client closed request), do not log as error, return immediately.
+ 
+`JsonSerializerOptions` should be cached as a `readonly` field, not created per request. Creating a new options object on every exception would add unnecessary allocation on an already-failing request path.
+ 
+**Final implementation:**
+```csharp
+public class ExceptionHandlingMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<ExceptionHandlingMiddleware> _logger;
+ 
+    private readonly JsonSerializerOptions _writeOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+ 
+    public ExceptionHandlingMiddleware(
+        RequestDelegate next,
+        ILogger<ExceptionHandlingMiddleware> logger)
+    {
+        _next   = next;
+        _logger = logger;
+    }
+ 
+    public async Task InvokeAsync(HttpContext context)
+    {
+        try
+        {
+            await _next(context);
+        }
+        catch (Exception ex)
+        {
+            if (ex is OperationCanceledException)
+            {
+                context.Response.StatusCode = 499;
+                return;
+            }
+ 
+            _logger.LogError(ex, "Unhandled exception on {Method} {Path}",
+                context.Request.Method, context.Request.Path);
+ 
+            await HandleExceptionAsync(context, ex);
+        }
+    }
+ 
+    private async Task HandleExceptionAsync(HttpContext context, Exception ex)
+    {
+        context.Response.ContentType = "application/json";
+        context.Response.StatusCode  = (int)HttpStatusCode.InternalServerError;
+ 
+        var response = new
+        {
+            status  = 500,
+            error   = "An unexpected error occurred.",
+            details = ex.Message  // remove in production — log server-side only
+        };
+ 
+        await context.Response.WriteAsync(
+            JsonSerializer.Serialize(response, _writeOptions));
+    }
+}
+```
+ 
+```csharp
+// Program.cs — must be first in the pipeline
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapControllers();
+```
+ 
+**Why first in the pipeline:**
+`await _next(context)` executes the entire remaining pipeline. Registering exception middleware first means its `try` block wraps everything — an exception anywhere downstream bubbles back and is caught here. Registering it last would only wrap the controllers, leaving exceptions in routing and authentication middleware unhandled.
+ 
+**Score:** 9.3/10 first attempt
+ 
+---
+ 
+### Direction A — Complete
+ 
+Five tasks completed. The store project is now a properly layered system.
+ 
+| What changed | Before | After |
+|---|---|---|
+| Controller size | 50–150 lines with logic | 5–15 lines, HTTP only |
+| Business logic location | Scattered in controllers | Service classes |
+| Validation | Manual if-checks in services | FluentValidation, automatic |
+| Error handling | Try/catch everywhere | One middleware, consistent shape |
+| EF Core in controllers | Direct DbContext calls | Zero — interfaces only |
+| Testability | Cannot unit test | Services fully mockable |
+ 
+**The dependency rule held throughout:**
+- `Store.Domain` — knows nothing
+- `Store.Application` — knows Domain only
+- `Store.Infrastructure` — knows Application + Domain + EF Core
+- `Store.API` — knows Application (interfaces/DTOs), never Infrastructure directly
+ 
+These patterns transfer directly to the ERP system. Every folder, every interface, every `Result<T>` you write there will feel familiar because you built them here first on a small system you already understood.
