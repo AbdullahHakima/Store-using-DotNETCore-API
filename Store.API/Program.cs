@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
+using Store.API.Middleware;
 using Store.Application;
 using Store.Infrastructure;
 using Store.Infrastructure.Interceptors;
@@ -55,7 +57,8 @@ namespace Store.API
             }
 
             app.UseAuthorization();
-
+            // set the exception handler as first on the middleware pipline 
+            app.UseMiddleware<ExceptionHandlingMiddleware>();
 
             app.MapControllers();
             using (var scope = app.Services.CreateScope())
