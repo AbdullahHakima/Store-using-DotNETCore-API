@@ -1537,3 +1537,91 @@ public class OrdersController : ControllerBase
 ```
  
 **Score:** 7/10 first attempt → 9.3/10 final
+---
+ 
+### Task A4 — FluentValidation
+ 
+**What changed:** Validation moved out of service methods into dedicated validator classes. Services no longer guard against malformed input — that happens automatically before the service is ever called.
+ 
+**Package:** `FluentValidation.AspNetCore` installed in `Store.Application`
+ 
+**Key concepts:**
+ 
+`AddValidatorsFromAssembly` scans the assembly and registers every `AbstractValidator<T>` it finds. Adding a new validator requires no changes to DI — just create the class and it is picked up automatically.
+ 
+`AddFluentValidationAutoValidation` wires FluentValidation into the ASP.NET Core model binding pipeline. When a request arrives, the validator runs before the controller action body. If validation fails, ASP.NET returns a `400 Bad Request` with the validation errors automatically — the service is never called.
+ 
+**The `.When()` condition is required for optional fields.** FluentValidation evaluates every rule by default, including rules on nullable fields that were not provided. Without `.When(r => r.Field.HasValue)`, a rule like `GreaterThan(0)` on a `decimal?` fires when the field is null — producing a spurious validation error for a field the user did not even send.
+ 
+**Cross-field validation** — `RuleFor(r => r.MaxPrice).GreaterThanOrEqualTo(r => r.MinPrice!.Value).When(r => r.MinPrice.HasValue && r.MaxPrice.HasValue)` — validates the relationship between two fields. Both must be present for the rule to apply.
+ 
+**Final validators:**
+```csharp
+public class ProductSearchRequestValidator : AbstractValidator<ProductSearchRequest>
+{
+    public ProductSearchRequestValidator()
+    {
+        RuleFor(r => r.Page)
+            .GreaterThanOrEqualTo(1)
+            .WithMessage("Page must be at least 1.");
+ 
+        RuleFor(r => r.PageSize)
+            .LessThanOrEqualTo(50)
+            .WithMessage("Maximum allowed is 50 per page.");
+ 
+        RuleFor(r => r.MinPrice)
+            .GreaterThan(0m).WithMessage("MinPrice must be greater than 0.")
+            .When(r => r.MinPrice.HasValue);
+ 
+        RuleFor(r => r.MaxPrice)
+            .GreaterThan(0m).LessThanOrEqualTo(1_000_000m)
+            .When(r => r.MaxPrice.HasValue);
+ 
+        RuleFor(r => r.MaxPrice)
+            .GreaterThanOrEqualTo(r => r.MinPrice!.Value)
+            .WithMessage("MaxPrice must be greater than or equal to MinPrice.")
+            .When(r => r.MaxPrice.HasValue && r.MinPrice.HasValue);
+    }
+}
+ 
+public class CreateOrderRequestValidator : AbstractValidator<OrderCreateRequest>
+{
+    public CreateOrderRequestValidator()
+    {
+        RuleFor(r => r.CustomerId)
+            .NotEmpty().WithMessage("CustomerId is required.");
+ 
+        RuleFor(r => r.Items)
+            .NotEmpty().WithMessage("Order must have at least one item.");
+ 
+        RuleForEach(r => r.Items).ChildRules(item =>
+        {
+            item.RuleFor(i => i.ProductId)
+                .NotEmpty().WithMessage("ProductId is required.");
+ 
+            item.RuleFor(i => i.Quantity)
+                .GreaterThan(0).WithMessage("Quantity must be at least 1.");
+ 
+            item.RuleFor(i => i.UnitPrice)
+                .GreaterThan(0m).WithMessage("UnitPrice must be greater than 0.");
+        });
+    }
+}
+```
+ 
+```csharp
+// Store.Application/DependencyInjection.cs
+public static IServiceCollection AddApplication(this IServiceCollection services)
+{
+    services.AddValidatorsFromAssembly(typeof(DependencyInjection).Assembly);
+    services.AddFluentValidationAutoValidation();
+    return services;
+}
+```
+ 
+**Common mistakes to avoid:**
+- Missing `.When()` on optional nullable fields — causes false validation errors
+- No cross-field rule for MinPrice/MaxPrice — allows nonsensical ranges like min=500, max=10
+- Leaving manual `if (!request.Items.Any())` in the service after adding FluentValidation — redundant and confusing
+ 
+**Score:** 9.3/10 first attempt
