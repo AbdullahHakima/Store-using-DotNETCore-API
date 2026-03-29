@@ -1735,3 +1735,171 @@ Five tasks completed. The store project is now a properly layered system.
 - `Store.API` — knows Application (interfaces/DTOs), never Infrastructure directly
  
 These patterns transfer directly to the ERP system. Every folder, every interface, every `Result<T>` you write there will feel familiar because you built them here first on a small system you already understood.
+
+---
+
+## Unit Testing Learning Journey (Mentored + Monitored)
+
+This roadmap is designed so I can **mentor you step-by-step** while you practice.  
+Each lesson has:
+- a focused concept,
+- a concrete task in this project,
+- a "submission checklist" so I can review your progress.
+
+> Progress rule: Do not move to the next lesson until the current lesson checklist is completed.
+
+### Lesson 00 — Setup the Test Project
+
+**Goal:** Create the testing environment correctly.
+
+**Tasks**
+1. Add a new test project: `Store.Application.Tests` (xUnit).
+2. Add packages:
+   - `xunit`
+   - `xunit.runner.visualstudio`
+   - `Microsoft.NET.Test.Sdk`
+   - `FluentAssertions`
+   - `Moq`
+3. Reference `Store.Application` and `Store.Domain`.
+4. Add the test project to solution.
+
+**Submission checklist (for mentor review)**
+- [ ] Test project builds.
+- [ ] `dotnet test` runs and discovers tests.
+- [ ] You can explain AAA pattern (Arrange / Act / Assert) in your own words.
+
+---
+
+### Lesson 01 — First Unit Test (Happy Path)
+
+**Goal:** Write one clean, readable unit test.
+
+**Tasks**
+1. Pick one pure business method (recommended: payment logic in `PaymentService`).
+2. Write a test for the success scenario:
+   - valid order,
+   - confirmed status,
+   - valid amount,
+   - payment accepted.
+3. Assert returned result values and key state changes (`IsPaid` when applicable).
+
+**Submission checklist (for mentor review)**
+- [ ] Test name follows behavior style: `Method_ShouldExpectedBehavior_WhenCondition`.
+- [ ] Assertions verify output + state, not just "not null".
+- [ ] No DB or API involved (unit test only).
+
+---
+
+### Lesson 02 — Guard Clauses & Failure Cases
+
+**Goal:** Validate business rules through negative tests.
+
+**Tasks**
+Write separate tests for:
+1. Order not found.
+2. Order not confirmed.
+3. Amount <= 0.
+4. Unsupported payment method.
+5. Payment exceeds remaining balance.
+
+**Submission checklist (for mentor review)**
+- [ ] One test per rule (no giant combined test).
+- [ ] Clear error message assertions.
+- [ ] You can explain why these are unit tests, not integration tests.
+
+---
+
+### Lesson 03 — Mocking Dependencies with Moq
+
+**Goal:** Control external behavior and verify interactions.
+
+**Tasks**
+1. Mock repository/service dependencies used by your application service.
+2. Setup expected returns for success and failure paths.
+3. Verify critical interactions happened exactly once (or never), e.g. save/commit calls.
+
+**Submission checklist (for mentor review)**
+- [ ] Uses `Setup(...)` and `Verify(...)` intentionally.
+- [ ] No over-mocking (only mock true dependencies).
+- [ ] You can explain the difference between state verification and interaction verification.
+
+---
+
+### Lesson 04 — Testing Validators
+
+**Goal:** Prove input validation rules are enforced.
+
+**Tasks**
+1. Create tests for:
+   - `CreateOrderRequestValidator`
+   - `ProductSearchRequestValidator`
+2. Add valid and invalid cases for each important rule.
+3. Assert on specific field failures (not only overall invalid).
+
+**Submission checklist (for mentor review)**
+- [ ] Tests cover both valid and invalid payloads.
+- [ ] Assertions include failing property names.
+- [ ] Edge values are included (zero, null, empty, max page size, etc.).
+
+---
+
+### Lesson 05 — Parametrized Tests (Theory)
+
+**Goal:** Remove duplication while increasing coverage.
+
+**Tasks**
+1. Convert repeated validation scenarios into `[Theory]` + `[InlineData]`.
+2. Keep at least one `[Fact]` where setup is unique/complex.
+3. Refactor common setup into helper methods only when readability improves.
+
+**Submission checklist (for mentor review)**
+- [ ] Theory data is readable and purposeful.
+- [ ] No duplicated Arrange blocks across many tests.
+- [ ] Test readability stayed high after refactor.
+
+---
+
+### Lesson 06 — Integration Test Intro (Optional after Unit Test Core)
+
+**Goal:** Understand the difference between unit and integration tests.
+
+**Tasks**
+1. Add one integration test for an API endpoint (recommended: product search).
+2. Use test host / in-memory approach.
+3. Assert HTTP status + response shape.
+
+**Submission checklist (for mentor review)**
+- [ ] You can clearly state why this is integration (not unit).
+- [ ] Test hits pipeline components together.
+- [ ] Unit tests remain the majority.
+
+---
+
+## Weekly Monitoring Template
+
+Use this section to track progress with me:
+
+- **Week 1 target:** Lessons 00–01
+  - [ ] Completed
+  - Notes:
+- **Week 2 target:** Lessons 02–03
+  - [ ] Completed
+  - Notes:
+- **Week 3 target:** Lessons 04–05
+  - [ ] Completed
+  - Notes:
+- **Week 4 target:** Lesson 06 + review/refactor
+  - [ ] Completed
+  - Notes:
+
+## Mentor Feedback Log (Fill After Each Submission)
+
+| Date | Lesson | What you did well | What to improve next | Status |
+|---|---|---|---|---|
+| YYYY-MM-DD | L00 |  |  | Pending |
+| YYYY-MM-DD | L01 |  |  | Pending |
+| YYYY-MM-DD | L02 |  |  | Pending |
+| YYYY-MM-DD | L03 |  |  | Pending |
+| YYYY-MM-DD | L04 |  |  | Pending |
+| YYYY-MM-DD | L05 |  |  | Pending |
+| YYYY-MM-DD | L06 |  |  | Pending |
